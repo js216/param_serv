@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Author: Jakob Kastelic
+// Copyright (c) 2026 Stanford Research Systems, Inc.
+
 //! # param_serv
 //!
 //! Lightweight parameter server with two interfaces:

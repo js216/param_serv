@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Author: Jakob Kastelic
+// Copyright (c) 2026 Stanford Research Systems, Inc.
+
 use param_serv::{
     OP_GET, OP_LIST, OP_SET, UDS_PATH, read_f64, read_u8, read_u16,
     read_u64,

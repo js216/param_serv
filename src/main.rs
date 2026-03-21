@@ -78,10 +78,10 @@ impl State {
 
 // ---- UDS binary server ------------------------------------------
 //
-// OP_SET  [u8=1][u16 count][(u8 nlen)(name)(f64)]...  →  [u8 0]
-// OP_GET  [u8=2][u64 cursor]  →
+// OP_SET  [u8=1][u16 count][(u8 nlen)(name)(f64)]...  ->  [u8 0]
+// OP_GET  [u8=2][u64 cursor]  ->
 //         [u64 cursor][u16 count][(u8 nlen)(name)(f64)]...
-// OP_LIST [u8=3]  →  [u16 count][(u8 nlen)(name)]...
+// OP_LIST [u8=3]  ->  [u16 count][(u8 nlen)(name)]...
 
 fn uds_serve(
     r: &mut BufReader<UnixStream>,
@@ -127,7 +127,7 @@ fn uds_serve(
             OP_GET => {
                 let cursor = read_u64(r)?;
                 resp.clear();
-                // [u64 new_cursor][u16 count] — filled below
+                // [u64 new_cursor][u16 count] -- filled below
                 resp.extend_from_slice(&[0u8; 10]);
                 let mut count = 0u16;
                 {
@@ -332,7 +332,7 @@ fn handle_tcp_client(
         }
 
         let result = match (req.method.as_str(), req.path.as_str()) {
-            // List param names — used by browser and diagnostics
+            // List param names -- used by browser and diagnostics
             ("GET", "/params") => {
                 let body: String = params()
                     .iter()
@@ -341,7 +341,7 @@ fn handle_tcp_client(
                 respond(&mut writer, 200, "OK", &[], body.as_bytes())
             }
 
-            // Set params from browser — same binary body as UDS
+            // Set params from browser -- same binary body as UDS
             // OP_SET (minus the opcode byte)
             ("PUT", "/params") => {
                 let b = &req.body;
@@ -380,7 +380,7 @@ fn handle_tcp_client(
                 respond(&mut writer, 200, "OK", &[], &[])
             }
 
-            // CORS preflight — browser sends this before PUT/POST
+            // CORS preflight -- browser sends this before PUT/POST
             ("OPTIONS", _) => respond(
                 &mut writer,
                 204,

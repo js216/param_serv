@@ -10,7 +10,7 @@
 //!
 //! On-device firmware clients use this instead of HTTP because it is
 //! lower overhead (no HTTP framing, no text parsing) and stays local
-//! to the device via a Unix domain socket — no network stack involved.
+//! to the device via a Unix domain socket -- no network stack involved.
 //!
 //! Use the helpers in this crate rather than the wire format directly:
 //!
@@ -36,11 +36,11 @@
 //!
 //! ```text
 //! OP_LIST (3)  req: [u8=3]
-//!              res: [u16 count][(u8 nlen)(name)…]
-//! OP_SET  (1)  req: [u8=1][u16 count][(u8 nlen)(name)(f64)…]
+//!              res: [u16 count][(u8 nlen)(name)...]
+//! OP_SET  (1)  req: [u8=1][u16 count][(u8 nlen)(name)(f64)...]
 //!              res: [u8=0]  (ack)
 //! OP_GET  (2)  req: [u8=2][u64 cursor]
-//!              res: [u64 cursor][u16 count][(u8 nlen)(name)(f64)…]
+//!              res: [u64 cursor][u16 count][(u8 nlen)(name)(f64)...]
 //! ```
 //!
 //! `OP_GET` returns only params changed since `cursor`;
@@ -48,19 +48,19 @@
 //!
 //! ## HTTP interface (TCP port 7777)
 //!
-//! For browser clients. `GET /events` is SSE (Server-Sent Events) —
+//! For browser clients. `GET /events` is SSE (Server-Sent Events) --
 //! a long-lived HTTP connection where the server pushes updates;
 //! not REST.
 //!
 //! ```text
-//! GET /params  →  newline-separated parameter names
-//! PUT /params  body: [u16 count][(u8 nlen)(name)(f64)…]  →  200 OK
-//! GET /events  →  SSE stream (see below)
+//! GET /params  ->  newline-separated parameter names
+//! PUT /params  body: [u16 count][(u8 nlen)(name)(f64)...]  ->  200 OK
+//! GET /events  ->  SSE stream (see below)
 //! ```
 //!
 //! SSE event format (pushed at up to 60 Hz on any change):
 //! ```text
-//! data: {"c":<clock>,"p":{"name":value,…}}
+//! data: {"c":<clock>,"p":{"name":value,...}}
 //! ```
 //! `c` is a monotonic counter incremented on every `SET`.
 
@@ -109,7 +109,7 @@ pub fn connect() -> UnixStream {
     }
 }
 
-/// OP_LIST — return all parameter names known to the server.
+/// OP_LIST -- return all parameter names known to the server.
 pub fn param_list(
     w: &mut impl Write,
     r: &mut impl Read,
@@ -126,7 +126,7 @@ pub fn param_list(
     Ok(names)
 }
 
-/// OP_SET — write one or more `(name, value)` pairs; waits for ack.
+/// OP_SET -- write one or more `(name, value)` pairs; waits for ack.
 pub fn param_set(
     w: &mut impl Write,
     r: &mut impl Read,
@@ -148,7 +148,7 @@ pub fn param_set(
     Ok(())
 }
 
-/// OP_GET — fetch params changed since `cursor`, calling `f` for each.
+/// OP_GET -- fetch params changed since `cursor`, calling `f` for each.
 /// Advances `cursor` to the server's current clock.
 pub fn param_get(
     w: &mut impl Write,

@@ -4,23 +4,31 @@
 <meta charset="UTF-8">
 <title>Param Debug</title>
 <style>
-  body   { font-family: monospace; background: #1e1e1e; color: #d4d4d4; margin: 1rem; }
-  input[type=text] { background: #2d2d2d; color: #d4d4d4; border: 1px solid #555; padding: 2px 6px;
-                     font-family: monospace; font-size: 1em; width: 14ch; }
+  body   { font-family: monospace; background: #1e1e1e;
+           color: #d4d4d4; margin: 1rem; }
+  input[type=text] { background: #2d2d2d; color: #d4d4d4;
+                     border: 1px solid #555; padding: 2px 6px;
+                     font-family: monospace; font-size: 1em;
+                     width: 14ch; }
   input[type=text].editing { border-color: #f08; }
-  button { background: #0e639c; color: #fff; border: none; padding: 4px 12px; cursor: pointer;
+  button { background: #0e639c; color: #fff; border: none;
+           padding: 4px 12px; cursor: pointer;
            font-family: monospace; font-size: 1em; }
   button:hover { background: #1177bb; }
   #status  { color: #888; margin: 0.4rem 0; font-size: 0.85em; }
   table    { border-collapse: collapse; margin-top: 0.5rem; }
-  th       { text-align: left; color: #888; border-bottom: 1px solid #444; padding: 2px 16px 4px 0; }
+  th       { text-align: left; color: #888;
+             border-bottom: 1px solid #444;
+             padding: 2px 16px 4px 0; }
   td       { padding: 1px 16px 1px 0; vertical-align: middle; }
 </style>
 </head>
 <body>
 
-<label>IP: <input id="addr" type="text" value="192.168.1.100" size="18"></label>
-<label> port: <input id="port" type="text" value="7777" size="6"></label>
+<label>IP: <input id="addr" type="text"
+      value="192.168.1.100" size="18"></label>
+<label> port: <input id="port" type="text"
+       value="7777" size="6"></label>
 <button id="btn">Connect</button>
 
 <div id="status">disconnected</div>
@@ -85,10 +93,10 @@ function sendParam(name, val) {
 	const nb   = enc.encode(name);
 	const buf  = new ArrayBuffer(2 + 1 + nb.length + 8);
 	const view = new DataView(buf);
-	view.setUint16(0, 1, true);                    // count = 1, little-endian
+	view.setUint16(0, 1, true);          // count = 1, little-endian
 	view.setUint8(2, nb.length);
 	nb.forEach((b, i) => view.setUint8(3 + i, b));
-	view.setFloat64(3 + nb.length, val, true);     // little-endian
+	view.setFloat64(3 + nb.length, val, true);  // little-endian
 	fetch(`${baseUrl()}/params`, { method: 'PUT', body: buf });
 }
 
@@ -108,11 +116,12 @@ function connect() {
 			if (!row.input.classList.contains('editing'))
 				row.input.value = v.toFixed(6);
 		}
-		status.textContent = `connected  cursor=${c}  params=${rows.size}`;
+		status.textContent =
+			`connected  cursor=${c}  params=${rows.size}`;
 	};
 
 	es.onerror = () => {
-		status.textContent = 'connection error (reconnecting…)';
+		status.textContent = 'connection error (reconnecting...)';
 	};
 }
 
@@ -124,7 +133,8 @@ function disconnect() {
 	status.textContent = 'disconnected';
 }
 
-btn.addEventListener('click', () => { if (es) disconnect(); else connect(); });
+btn.addEventListener('click',
+	() => { if (es) disconnect(); else connect(); });
 </script>
 </body>
 </html>

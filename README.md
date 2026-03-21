@@ -40,7 +40,7 @@ param_get(&mut w, &mut r, &mut cursor, |name, val| {
 From a browser, `GET /events` on port 7777 gives an SSE stream:
 
 ```
-data: {"c":4,"p":{"sensitivity":1.0,"frequency":440.0,…}}
+data: {"c":4,"p":{"sensitivity":1.0,"frequency":440.0,...}}
 ```
 
 See `examples/` for a debug UI and a randomizer.

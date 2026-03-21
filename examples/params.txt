@@ -1,0 +1,5 @@
+# instrument parameters
+sensitivity     1.0
+time_constant   0.1
+phase           0.0
+frequency       1000.00

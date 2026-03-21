@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Param Debug</title>
+<style>
+  body   { font-family: monospace; background: #1e1e1e; color: #d4d4d4; margin: 1rem; }
+  input[type=text] { background: #2d2d2d; color: #d4d4d4; border: 1px solid #555; padding: 2px 6px;
+                     font-family: monospace; font-size: 1em; width: 14ch; }
+  input[type=text].editing { border-color: #f08; }
+  button { background: #0e639c; color: #fff; border: none; padding: 4px 12px; cursor: pointer;
+           font-family: monospace; font-size: 1em; }
+  button:hover { background: #1177bb; }
+  #status  { color: #888; margin: 0.4rem 0; font-size: 0.85em; }
+  table    { border-collapse: collapse; margin-top: 0.5rem; }
+  th       { text-align: left; color: #888; border-bottom: 1px solid #444; padding: 2px 16px 4px 0; }
+  td       { padding: 1px 16px 1px 0; vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<label>IP: <input id="addr" type="text" value="192.168.1.100" size="18"></label>
+<label> port: <input id="port" type="text" value="7777" size="6"></label>
+<button id="btn">Connect</button>
+
+<div id="status">disconnected</div>
+
+<table>
+  <thead><tr><th>name</th><th>value</th></tr></thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<script>
+let es = null;
+// Map: name -> { input: HTMLInputElement, live: number }
+const rows = new Map();
+
+const status = document.getElementById('status');
+const tbody  = document.getElementById('tbody');
+const btn    = document.getElementById('btn');
+
+function baseUrl() {
+	const addr = document.getElementById('addr').value.trim();
+	const port = document.getElementById('port').value.trim();
+	return `http://${addr}:${port}`;
+}
+
+function ensureRow(name) {
+	if (rows.has(name)) return rows.get(name);
+
+	const tr  = document.createElement('tr');
+	const tdN = document.createElement('td');
+	tdN.textContent = name;
+
+	const inp = document.createElement('input');
+	inp.type = 'text';
+
+	inp.addEventListener('focus', () => inp.classList.add('editing'));
+	inp.addEventListener('blur',  () => inp.classList.remove('editing'));
+	inp.addEventListener('keydown', (e) => {
+		if (e.key === 'Enter') {
+			const v = parseFloat(inp.value);
+			if (!isNaN(v)) sendParam(name, v);
+			inp.blur();
+		} else if (e.key === 'Escape') {
+			const row = rows.get(name);
+			if (row) inp.value = row.live.toFixed(6);
+			inp.blur();
+		}
+	});
+
+	const tdV = document.createElement('td');
+	tdV.appendChild(inp);
+	tr.appendChild(tdN);
+	tr.appendChild(tdV);
+	tbody.appendChild(tr);
+
+	const entry = { input: inp, live: 0 };
+	rows.set(name, entry);
+	return entry;
+}
+
+function sendParam(name, val) {
+	const enc  = new TextEncoder();
+	const nb   = enc.encode(name);
+	const buf  = new ArrayBuffer(2 + 1 + nb.length + 8);
+	const view = new DataView(buf);
+	view.setUint16(0, 1, true);                    // count = 1, little-endian
+	view.setUint8(2, nb.length);
+	nb.forEach((b, i) => view.setUint8(3 + i, b));
+	view.setFloat64(3 + nb.length, val, true);     // little-endian
+	fetch(`${baseUrl()}/params`, { method: 'PUT', body: buf });
+}
+
+function connect() {
+	es = new EventSource(`${baseUrl()}/events`);
+
+	es.onopen = () => {
+		status.textContent = `connected to ${baseUrl()}`;
+		btn.textContent = 'Disconnect';
+	};
+
+	es.onmessage = (e) => {
+		const { c, p } = JSON.parse(e.data);
+		for (const [k, v] of Object.entries(p)) {
+			const row = ensureRow(k);
+			row.live = v;
+			if (!row.input.classList.contains('editing'))
+				row.input.value = v.toFixed(6);
+		}
+		status.textContent = `connected  cursor=${c}  params=${rows.size}`;
+	};
+
+	es.onerror = () => {
+		status.textContent = 'connection error (reconnecting…)';
+	};
+}
+
+function disconnect() {
+	if (es) { es.close(); es = null; }
+	rows.clear();
+	tbody.innerHTML = '';
+	btn.textContent    = 'Connect';
+	status.textContent = 'disconnected';
+}
+
+btn.addEventListener('click', () => { if (es) disconnect(); else connect(); });
+</script>
+</body>
+</html>

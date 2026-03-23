@@ -2,10 +2,7 @@
 // Author: Jakob Kastelic
 // Copyright (c) 2026 Stanford Research Systems, Inc.
 
-use param_serv::{
-    OP_GET, OP_LIST, OP_SET, UDS_PATH, read_f64, read_u8, read_u16,
-    read_u64,
-};
+use param_serv::{Op, UDS_PATH};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -97,14 +94,21 @@ fn uds_serve(
     let mut nbuf = [0u8; 255];
 
     loop {
-        match read_u8(r)? {
-            OP_SET => {
-                let count = read_u16(r)? as usize;
+        let mut b1 = [0u8; 1];
+        r.read_exact(&mut b1)?;
+        match b1[0] {
+            op if op == Op::Set as u8 => {
+                let mut b2 = [0u8; 2];
+                r.read_exact(&mut b2)?;
+                let count = u16::from_ne_bytes(b2) as usize;
                 updates.clear();
                 for _ in 0..count {
-                    let nlen = read_u8(r)? as usize;
+                    r.read_exact(&mut b1)?;
+                    let nlen = b1[0] as usize;
                     r.read_exact(&mut nbuf[..nlen])?;
-                    let val = read_f64(r)?;
+                    let mut b8 = [0u8; 8];
+                    r.read_exact(&mut b8)?;
+                    let val = f64::from_ne_bytes(b8);
                     if let Ok(name) = std::str::from_utf8(&nbuf[..nlen])
                     {
                         if let Some(&i) = index.get(name) {
@@ -125,19 +129,16 @@ fn uds_serve(
                 w.write_all(&[0u8])?;
             }
 
-            OP_GET => {
-                let cursor = read_u64(r)?;
+            op if op == Op::Get as u8 => {
+                let mut b8 = [0u8; 8];
+                r.read_exact(&mut b8)?;
+                let cursor = u64::from_ne_bytes(b8);
                 resp.clear();
                 // [u64 new_cursor][u16 count] -- filled below
                 resp.extend_from_slice(&[0u8; 10]);
                 let mut count = 0u16;
                 {
-                    let s = notify
-                        .wait_while(
-                            state.lock().unwrap(),
-                            |s| s.clock <= cursor,
-                        )
-                        .unwrap();
+                    let s = state.lock().unwrap();
                     resp[..8].copy_from_slice(&s.clock.to_ne_bytes());
                     for (i, p) in params().iter().enumerate() {
                         if s.versions[i] > cursor {
@@ -154,7 +155,7 @@ fn uds_serve(
                 w.write_all(&resp)?;
             }
 
-            OP_LIST => {
+            op if op == Op::List as u8 => {
                 resp.clear();
                 resp.extend_from_slice(
                     &(params().len() as u16).to_ne_bytes(),

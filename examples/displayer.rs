@@ -1,18 +1,16 @@
-use param_serv::{connect, param_get};
-use std::io::{self, BufReader};
+use param_serv::Connection;
+use std::thread::sleep;
+use std::time::Duration;
 
-fn main() -> io::Result<()> {
-    let stream = connect();
-    let mut w = stream.try_clone().expect("clone");
-    let mut r = BufReader::new(stream);
-
-    let mut cursor: u64 = 0;
+fn main() -> std::io::Result<()> {
+    let mut c = Connection::new()?;
 
     loop {
-        let changed = param_get(&mut w, &mut r, &mut cursor)?;
-        print!("\x1b[2J\x1b[H");
-        for (name, val) in &changed {
-            println!("{}: {:.6}", name, val);
+        print!("\x1b[2J\x1b[H"); // clear screen
+        for (name, val) in c.get()? {
+            println!("{}: {}", name, val);
         }
+
+        sleep(Duration::from_secs_f64(0.016));
     }
 }

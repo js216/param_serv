@@ -23,4 +23,4 @@
         echo "= $f"
         echo "#raw(read(\"/$f\"), lang: \"$lang\", block: true)"
     done
-} | typst compile --root . - /mnt/c/Users/Jkastelic/Downloads/param_serv.pdf
+} | typst compile --root . - target/param_serv.pdf

@@ -10,9 +10,8 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
 
 struct Param {
     name: String,
@@ -87,6 +86,7 @@ fn uds_serve(
     r: &mut BufReader<UnixStream>,
     w: &mut UnixStream,
     state: &Arc<Mutex<State>>,
+    notify: &Arc<Condvar>,
     index: &Arc<HashMap<String, usize>>,
 ) -> io::Result<()> {
     let p = params();
@@ -121,6 +121,7 @@ fn uds_serve(
                     }
                     s.sse_event = build_sse_event(&s);
                 }
+                notify.notify_all();
                 w.write_all(&[0u8])?;
             }
 
@@ -131,7 +132,12 @@ fn uds_serve(
                 resp.extend_from_slice(&[0u8; 10]);
                 let mut count = 0u16;
                 {
-                    let s = state.lock().unwrap();
+                    let s = notify
+                        .wait_while(
+                            state.lock().unwrap(),
+                            |s| s.clock <= cursor,
+                        )
+                        .unwrap();
                     resp[..8].copy_from_slice(&s.clock.to_ne_bytes());
                     for (i, p) in params().iter().enumerate() {
                         if s.versions[i] > cursor {
@@ -168,15 +174,17 @@ fn uds_serve(
 fn handle_uds_client(
     stream: UnixStream,
     state: Arc<Mutex<State>>,
+    notify: Arc<Condvar>,
     index: Arc<HashMap<String, usize>>,
 ) {
     let mut w = stream.try_clone().unwrap();
     let mut r = BufReader::new(stream);
-    let _ = uds_serve(&mut r, &mut w, &state, &index);
+    let _ = uds_serve(&mut r, &mut w, &state, &notify, &index);
 }
 
 fn run_uds(
     state: Arc<Mutex<State>>,
+    notify: Arc<Condvar>,
     index: Arc<HashMap<String, usize>>,
 ) {
     let _ = std::fs::remove_file(UDS_PATH);
@@ -184,8 +192,9 @@ fn run_uds(
     eprintln!("UDS  {}", UDS_PATH);
     for stream in listener.incoming().flatten() {
         let s = Arc::clone(&state);
+        let n = Arc::clone(&notify);
         let i = Arc::clone(&index);
-        thread::spawn(move || handle_uds_client(stream, s, i));
+        thread::spawn(move || handle_uds_client(stream, s, n, i));
     }
 }
 
@@ -272,7 +281,11 @@ fn respond(
     w.write_all(body)
 }
 
-fn serve_sse(w: &mut impl Write, state: &Arc<Mutex<State>>) {
+fn serve_sse(
+    w: &mut impl Write,
+    state: &Arc<Mutex<State>>,
+    notify: &Arc<Condvar>,
+) {
     let hdr = "HTTP/1.1 200 OK\r\n\
         Content-Type: text/event-stream\r\n\
         Cache-Control: no-cache\r\n\
@@ -285,29 +298,18 @@ fn serve_sse(w: &mut impl Write, state: &Arc<Mutex<State>>) {
     let mut cursor: u64 = 0;
 
     loop {
-        // Grab a ref-counted pointer to the pre-built event string
         let event = {
-            let s = state.lock().unwrap();
-            if s.clock > cursor {
-                cursor = s.clock;
-                Some(Arc::clone(&s.sse_event))
-            } else {
-                None
-            }
+            let s = notify
+                .wait_while(state.lock().unwrap(), |s| s.clock <= cursor)
+                .unwrap();
+            cursor = s.clock;
+            Arc::clone(&s.sse_event)
         };
-
-        match event {
-            Some(e) => {
-                if w.write_all(e.as_bytes()).is_err() {
-                    return;
-                }
-                if w.flush().is_err() {
-                    return;
-                }
-            }
-            None => std::thread::sleep(Duration::from_nanos(
-                1_000_000_000 / 60,
-            )),
+        if w.write_all(event.as_bytes()).is_err() {
+            return;
+        }
+        if w.flush().is_err() {
+            return;
         }
     }
 }
@@ -315,6 +317,7 @@ fn serve_sse(w: &mut impl Write, state: &Arc<Mutex<State>>) {
 fn handle_tcp_client(
     stream: TcpStream,
     state: Arc<Mutex<State>>,
+    notify: Arc<Condvar>,
     index: Arc<HashMap<String, usize>>,
 ) {
     let mut writer = stream.try_clone().expect("clone");
@@ -327,7 +330,7 @@ fn handle_tcp_client(
         };
 
         if req.method == "GET" && req.path == "/events" {
-            serve_sse(&mut writer, &state);
+            serve_sse(&mut writer, &state, &notify);
             return;
         }
 
@@ -377,6 +380,7 @@ fn handle_tcp_client(
                     }
                     s.sse_event = build_sse_event(&s);
                 }
+                notify.notify_all();
                 respond(&mut writer, 200, "OK", &[], &[])
             }
 
@@ -405,14 +409,16 @@ fn handle_tcp_client(
 
 fn run_tcp(
     state: Arc<Mutex<State>>,
+    notify: Arc<Condvar>,
     index: Arc<HashMap<String, usize>>,
 ) {
     let listener = TcpListener::bind(TCP_ADDR).expect("TCP bind");
     eprintln!("TCP  {}", TCP_ADDR);
     for stream in listener.incoming().flatten() {
         let s = Arc::clone(&state);
+        let n = Arc::clone(&notify);
         let i = Arc::clone(&index);
-        thread::spawn(move || handle_tcp_client(stream, s, i));
+        thread::spawn(move || handle_tcp_client(stream, s, n, i));
     }
 }
 
@@ -433,6 +439,7 @@ fn main() {
     }
 
     let state = Arc::new(Mutex::new(State::new()));
+    let notify = Arc::new(Condvar::new());
     let index: Arc<HashMap<String, usize>> = Arc::new(
         params()
             .iter()
@@ -443,9 +450,10 @@ fn main() {
 
     {
         let s = Arc::clone(&state);
+        let n = Arc::clone(&notify);
         let i = Arc::clone(&index);
-        thread::spawn(move || run_uds(s, i));
+        thread::spawn(move || run_uds(s, n, i));
     }
 
-    run_tcp(state, index);
+    run_tcp(state, notify, index);
 }

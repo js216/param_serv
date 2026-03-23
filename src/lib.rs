@@ -148,14 +148,13 @@ pub fn param_set(
     Ok(())
 }
 
-/// OP_GET -- fetch params changed since `cursor`, calling `f` for each.
+/// OP_GET -- fetch params changed since `cursor`.
 /// Advances `cursor` to the server's current clock.
 pub fn param_get(
     w: &mut impl Write,
     r: &mut impl Read,
     cursor: &mut u64,
-    mut f: impl FnMut(&str, f64),
-) -> io::Result<()> {
+) -> io::Result<Vec<(String, f64)>> {
     let mut req = [0u8; 9];
     req[0] = OP_GET;
     req[1..].copy_from_slice(&cursor.to_ne_bytes());
@@ -163,12 +162,14 @@ pub fn param_get(
 
     *cursor = read_u64(r)?;
     let count = read_u16(r)? as usize;
+    let mut results = Vec::with_capacity(count);
     let mut nbuf = [0u8; 255];
     for _ in 0..count {
         let nlen = read_u8(r)? as usize;
         r.read_exact(&mut nbuf[..nlen])?;
         let val = read_f64(r)?;
-        f(std::str::from_utf8(&nbuf[..nlen]).unwrap_or("?"), val);
+        let name = String::from_utf8_lossy(&nbuf[..nlen]).into_owned();
+        results.push((name, val));
     }
-    Ok(())
+    Ok(results)
 }

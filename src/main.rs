@@ -52,7 +52,7 @@ const SIG_IGN: usize = 1;
 // ---- State --------------------------------------------------
 
 struct State {
-    live: Vec<f64>,
+    values: Vec<Arc<String>>, // string repr of each param; shared by SSE and UDS
     versions: Vec<u64>,
     clock: u64,
     sse_event: Arc<String>, // pre-built, shared with all SSE clients
@@ -62,7 +62,10 @@ impl State {
     fn new() -> Self {
         let p = params();
         let mut s = State {
-            live: p.iter().map(|p| p.default).collect(),
+            values: p
+                .iter()
+                .map(|p| Arc::new(format!("{:.6}", p.default)))
+                .collect(),
             versions: vec![1; p.len()],
             clock: 1,
             sse_event: Arc::new(String::new()),
@@ -76,7 +79,7 @@ impl State {
 //
 // OP_SET  [u8=1][u16 count][(u8 nlen)(name)(f64)]...  ->  [u8 0]
 // OP_GET  [u8=2][u64 cursor]  ->
-//         [u64 cursor][u16 count][(u8 nlen)(name)(f64)]...
+//         [u64 cursor][u16 count][(u8 nlen)(name)(u8 vlen)(value)]...
 // OP_LIST [u8=3]  ->  [u16 count][(u8 nlen)(name)]...
 
 fn uds_serve(
@@ -88,7 +91,7 @@ fn uds_serve(
 ) -> io::Result<()> {
     let p = params();
     let resp_cap =
-        10 + p.iter().map(|p| 1 + p.name.len() + 8).sum::<usize>();
+        10 + p.iter().map(|p| 1 + p.name.len() + 1 + 24).sum::<usize>();
     let mut resp = Vec::with_capacity(resp_cap);
     let mut updates = Vec::<(usize, f64)>::with_capacity(p.len());
     let mut nbuf = [0u8; 255];
@@ -120,7 +123,7 @@ fn uds_serve(
                     let mut s = state.lock().unwrap();
                     s.clock += 1;
                     for &(i, v) in &updates {
-                        s.live[i] = v;
+                        s.values[i] = Arc::new(format!("{:.6}", v));
                         s.versions[i] = s.clock;
                     }
                     s.sse_event = build_sse_event(&s);
@@ -144,9 +147,9 @@ fn uds_serve(
                         if s.versions[i] > cursor {
                             resp.push(p.name.len() as u8);
                             resp.extend_from_slice(p.name.as_bytes());
-                            resp.extend_from_slice(
-                                &s.live[i].to_ne_bytes(),
-                            );
+                            let v = &s.values[i];
+                            resp.push(v.len() as u8);
+                            resp.extend_from_slice(v.as_bytes());
                             count += 1;
                         }
                     }
@@ -210,7 +213,7 @@ fn build_sse_event(s: &State) -> Arc<String> {
         ev.push('"');
         ev.push_str(&p.name);
         ev.push_str("\":");
-        ev.push_str(&format!("{:.6}", s.live[i]));
+        ev.push_str(&s.values[i]);
     }
     ev.push_str("}}\n\n");
     Arc::new(ev)
@@ -373,7 +376,8 @@ fn handle_tcp_client(
                                     .unwrap(),
                             );
                             if let Some(&i) = index.get(name) {
-                                s.live[i] = val;
+                                s.values[i] =
+                                    Arc::new(format!("{:.6}", val));
                                 s.versions[i] = s.clock;
                             }
                         }

@@ -66,7 +66,7 @@ impl Connection {
         Ok(())
     }
 
-    pub fn get(&mut self) -> io::Result<Vec<(String, String)>> {
+    pub fn get(&mut self) -> io::Result<Vec<(u16, String)>> {
         let mut req = [0u8; 9];
         req[0] = Op::Get as u8;
         req[1..].copy_from_slice(&self.cursor.to_ne_bytes());
@@ -81,18 +81,15 @@ impl Connection {
         let mut results = Vec::with_capacity(count);
         let mut nbuf = [0u8; 255];
         for _ in 0..count {
+            self.r.read_exact(&mut b2)?;
+            let index = u16::from_ne_bytes(b2);
             let mut b1 = [0u8; 1];
-            self.r.read_exact(&mut b1)?;
-            let nlen = b1[0] as usize;
-            self.r.read_exact(&mut nbuf[..nlen])?;
-            let name =
-                String::from_utf8_lossy(&nbuf[..nlen]).into_owned();
             self.r.read_exact(&mut b1)?;
             let vlen = b1[0] as usize;
             self.r.read_exact(&mut nbuf[..vlen])?;
             let val =
                 String::from_utf8_lossy(&nbuf[..vlen]).into_owned();
-            results.push((name, val));
+            results.push((index, val));
         }
         Ok(results)
     }

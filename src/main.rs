@@ -79,8 +79,9 @@ impl State {
 //
 // OP_SET  [u8=1][u16 count][(u8 nlen)(name)(f64)]...  ->  [u8 0]
 // OP_GET  [u8=2][u64 cursor]  ->
-//         [u64 cursor][u16 count][(u8 nlen)(name)(u8 vlen)(value)]...
+//         [u64 cursor][u16 count][(u16 index)(u8 vlen)(value)]...
 // OP_LIST [u8=3]  ->  [u16 count][(u8 nlen)(name)]...
+//         index of each name in the list is its permanent integer ID
 
 fn uds_serve(
     r: &mut BufReader<UnixStream>,
@@ -113,10 +114,8 @@ fn uds_serve(
                     r.read_exact(&mut b8)?;
                     let val = f64::from_ne_bytes(b8);
                     if let Ok(name) = std::str::from_utf8(&nbuf[..nlen])
-                    {
-                        if let Some(&i) = index.get(name) {
-                            updates.push((i, val));
-                        }
+                        && let Some(&i) = index.get(name) {
+                        updates.push((i, val));
                     }
                 }
                 {
@@ -143,10 +142,9 @@ fn uds_serve(
                 {
                     let s = state.lock().unwrap();
                     resp[..8].copy_from_slice(&s.clock.to_ne_bytes());
-                    for (i, p) in params().iter().enumerate() {
+                    for (i, _) in params().iter().enumerate() {
                         if s.versions[i] > cursor {
-                            resp.push(p.name.len() as u8);
-                            resp.extend_from_slice(p.name.as_bytes());
+                            resp.extend_from_slice(&(i as u16).to_ne_bytes());
                             let v = &s.values[i];
                             resp.push(v.len() as u8);
                             resp.extend_from_slice(v.as_bytes());
@@ -247,10 +245,9 @@ fn parse_request(r: &mut impl BufRead) -> io::Result<Option<Request>> {
         match read_line(r)? {
             Some(line) if line.is_empty() => break,
             Some(line) => {
-                if let Some((k, v)) = line.split_once(": ") {
-                    if k.eq_ignore_ascii_case("content-length") {
-                        content_length = v.trim().parse().unwrap_or(0);
-                    }
+                if let Some((k, v)) = line.split_once(": ")
+                    && k.eq_ignore_ascii_case("content-length") {
+                    content_length = v.trim().parse().unwrap_or(0);
                 }
             }
             None => return Ok(None),

@@ -1,5 +1,10 @@
-# instrument parameters
-sensitivity     1.0
-time_constant   0.1
-phase           0.0
-frequency       1000.00
+settings = {
+   max_sse_hz = 30,
+}
+
+params = {
+   {name="sensitivity",   default=1.0,    min=0.001, max=1000.0},
+   {name="time_constant", default=0.1,    min=0.001, max=30.0},
+   {name="phase",         default=0.0,    min=-180.0, max=180.0},
+   {name="frequency",     default=1000.0, min=20.0,  max=20000.0},
+}

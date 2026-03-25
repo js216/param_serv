@@ -2,37 +2,15 @@
 // Author: Jakob Kastelic
 // Copyright (c) 2026 Stanford Research Systems, Inc.
 
+mod config;
+
+use config::ParamDef as Param;
 use param_serv::TCP_ADDR;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-
-struct Param {
-    name: String,
-    default: f64,
-}
-
-fn load_params(path: &str) -> std::io::Result<Vec<Param>> {
-    let file = std::fs::File::open(path)?;
-    let mut params = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let mut parts = line.splitn(2, char::is_whitespace);
-        let name = parts.next().unwrap().to_string();
-        let default = parts
-            .next()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0.0);
-        params.push(Param { name, default });
-    }
-    Ok(params)
-}
 
 // ---- State --------------------------------------------------
 
@@ -245,9 +223,8 @@ fn handle(
                     s.clock += 1;
                     for line in text.lines() {
                         if let Some((name, val)) = line.split_once('\t')
-                            && let Some(i) = params.iter().position(|p| p.name == name)
-                            && let Ok(v) = val.parse::<f64>() {
-                            s.values[i] = format!("{:.6}", v);
+                            && let Some(i) = params.iter().position(|p| p.name == name) {
+                            s.values[i] = val.to_owned();
                             s.versions[i] = s.clock;
                         }
                     }
@@ -283,24 +260,15 @@ const SIGPIPE: i32 = 13;
 const SIG_IGN: usize = 1;
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: param_serv <params.txt> [--max-sse-hz N]");
+    let path = std::env::args().nth(1).expect("usage: param_serv <config.txt>");
 
-    let mut max_sse_hz: f64 = 30.0;
-    while let Some(arg) = args.next() {
-        if arg == "--max-sse-hz"
-            && let Some(v) = args.next().and_then(|s| s.parse().ok()) {
-            max_sse_hz = v;
-        }
-    }
-    let min_sse_interval = Duration::from_secs_f64(1.0 / max_sse_hz);
+    let cfg = config::load(&path).unwrap_or_else(|e| {
+        eprintln!("error loading {}: {}", path, e);
+        std::process::exit(1);
+    });
 
-    let params: Arc<Vec<Param>> = Arc::new(
-        load_params(&path).unwrap_or_else(|e| {
-            eprintln!("error loading {}: {}", path, e);
-            std::process::exit(1);
-        })
-    );
+    let min_sse_interval = Duration::from_secs_f64(1.0 / cfg.max_sse_hz);
+    let params: Arc<Vec<Param>> = Arc::new(cfg.params);
 
     unsafe { signal(SIGPIPE, SIG_IGN); }
 

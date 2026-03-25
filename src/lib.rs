@@ -42,7 +42,7 @@ impl Connection {
     }
 
     /// Sets one or more parameters by name.
-    pub fn set(&mut self, updates: &[(&str, f64)]) -> io::Result<()> {
+    pub fn set(&mut self, updates: &[(&str, &str)]) -> io::Result<()> {
         let body: String = updates.iter()
             .map(|(n, v)| format!("{}\t{}\n", n, v))
             .collect();

@@ -2,95 +2,82 @@
 // Author: Jakob Kastelic
 // Copyright (c) 2026 Stanford Research Systems, Inc.
 
-use std::io::{self, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 
-pub const UDS_PATH: &str = "/tmp/param_serv";
-
-pub enum Op {
-    Set  = 1,
-    Get  = 2,
-    List = 3,
-}
+pub const TCP_ADDR: &str = "127.0.0.1:7777";
 
 pub struct Connection {
-    r: BufReader<UnixStream>,
-    w: UnixStream,
+    r: BufReader<TcpStream>,
+    w: TcpStream,
     cursor: u64,
 }
 
 impl Connection {
     pub fn new() -> io::Result<Self> {
-        let s = UnixStream::connect(UDS_PATH)?;
+        let s = TcpStream::connect(TCP_ADDR)?;
         Ok(Self { w: s.try_clone()?, r: BufReader::new(s), cursor: 0 })
     }
 
+    /// Returns all parameter names in index order.
     pub fn list(&mut self) -> io::Result<Vec<String>> {
-        self.w.write_all(&[Op::List as u8])?;
-        let mut b2 = [0u8; 2];
-        self.r.read_exact(&mut b2)?;
-        let count = u16::from_ne_bytes(b2) as usize;
-        let mut names = Vec::with_capacity(count);
-        let mut nbuf = [0u8; 255];
-        for _ in 0..count {
-            let mut b1 = [0u8; 1];
-            self.r.read_exact(&mut b1)?;
-            let nlen = b1[0] as usize;
-            self.r.read_exact(&mut nbuf[..nlen])?;
-            names.push(
-                String::from_utf8_lossy(&nbuf[..nlen]).into_owned(),
-            );
-        }
-        Ok(names)
+        self.send("GET /params HTTP/1.1\r\n\r\n")?;
+        let (body, _) = self.recv()?;
+        Ok(body.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
     }
 
-    pub fn set(&mut self, updates: &[(&str, f64)]) -> io::Result<()> {
-        let mut buf = Vec::with_capacity(
-            3 + updates
-                .iter()
-                .map(|(n, _)| 1 + n.len() + 8)
-                .sum::<usize>(),
-        );
-        buf.push(Op::Set as u8);
-        buf.extend_from_slice(
-            &(updates.len() as u16).to_ne_bytes(),
-        );
-        for (name, val) in updates {
-            buf.push(name.len() as u8);
-            buf.extend_from_slice(name.as_bytes());
-            buf.extend_from_slice(&val.to_ne_bytes());
+    /// Returns parameters changed since the last call as (name, value) pairs.
+    /// On the first call returns all parameters.
+    pub fn get(&mut self) -> io::Result<Vec<(String, String)>> {
+        self.send(&format!("GET /values?cursor={} HTTP/1.1\r\n\r\n", self.cursor))?;
+        let (body, cursor) = self.recv()?;
+        self.cursor = cursor;
+        let mut results = Vec::new();
+        for line in body.lines() {
+            if let Some((name, val)) = line.split_once('\t') {
+                results.push((name.to_owned(), val.to_owned()));
+            }
         }
-        self.w.write_all(&buf)?;
-        let mut ack = [0u8; 1];
-        self.r.read_exact(&mut ack)?;
+        Ok(results)
+    }
+
+    /// Sets one or more parameters by name.
+    pub fn set(&mut self, updates: &[(&str, f64)]) -> io::Result<()> {
+        let body: String = updates.iter()
+            .map(|(n, v)| format!("{}\t{}\n", n, v))
+            .collect();
+        self.send(&format!(
+            "PUT /params HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        ))?;
+        self.recv()?;
         Ok(())
     }
 
-    pub fn get(&mut self) -> io::Result<Vec<(u16, String)>> {
-        let mut req = [0u8; 9];
-        req[0] = Op::Get as u8;
-        req[1..].copy_from_slice(&self.cursor.to_ne_bytes());
-        self.w.write_all(&req)?;
+    fn send(&mut self, req: &str) -> io::Result<()> {
+        self.w.write_all(req.as_bytes())
+    }
 
-        let mut b8 = [0u8; 8];
-        self.r.read_exact(&mut b8)?;
-        self.cursor = u64::from_ne_bytes(b8);
-        let mut b2 = [0u8; 2];
-        self.r.read_exact(&mut b2)?;
-        let count = u16::from_ne_bytes(b2) as usize;
-        let mut results = Vec::with_capacity(count);
-        let mut nbuf = [0u8; 255];
-        for _ in 0..count {
-            self.r.read_exact(&mut b2)?;
-            let index = u16::from_ne_bytes(b2);
-            let mut b1 = [0u8; 1];
-            self.r.read_exact(&mut b1)?;
-            let vlen = b1[0] as usize;
-            self.r.read_exact(&mut nbuf[..vlen])?;
-            let val =
-                String::from_utf8_lossy(&nbuf[..vlen]).into_owned();
-            results.push((index, val));
+    fn recv(&mut self) -> io::Result<(String, u64)> {
+        let mut line = String::new();
+        self.r.read_line(&mut line)?; // status line
+        let mut content_length = 0usize;
+        let mut cursor = self.cursor;
+        loop {
+            line.clear();
+            self.r.read_line(&mut line)?;
+            let h = line.trim();
+            if h.is_empty() { break; }
+            if let Some((k, v)) = h.split_once(": ") {
+                if k.eq_ignore_ascii_case("content-length") {
+                    content_length = v.parse().unwrap_or(0);
+                } else if k.eq_ignore_ascii_case("x-cursor") {
+                    cursor = v.parse().unwrap_or(self.cursor);
+                }
+            }
         }
-        Ok(results)
+        let mut body = vec![0u8; content_length];
+        self.r.read_exact(&mut body)?;
+        Ok((String::from_utf8_lossy(&body).into_owned(), cursor))
     }
 }

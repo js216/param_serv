@@ -2,13 +2,12 @@
 // Author: Jakob Kastelic
 // Copyright (c) 2026 Stanford Research Systems, Inc.
 
-use param_serv::{Op, UDS_PATH};
-use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use param_serv::TCP_ADDR;
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 struct Param {
     name: String,
@@ -35,179 +34,34 @@ fn load_params(path: &str) -> std::io::Result<Vec<Param>> {
     Ok(params)
 }
 
-static PARAMS: OnceLock<Vec<Param>> = OnceLock::new();
-
-fn params() -> &'static [Param] {
-    PARAMS.get().expect("params not loaded")
-}
-
-const TCP_ADDR: &str = "0.0.0.0:7777";
-
-unsafe extern "C" {
-    fn signal(signum: i32, handler: usize) -> usize;
-}
-const SIGPIPE: i32 = 13;
-const SIG_IGN: usize = 1;
-
 // ---- State --------------------------------------------------
 
 struct State {
-    values: Vec<Arc<String>>, // string repr of each param; shared by SSE and UDS
+    values: Vec<String>,
     versions: Vec<u64>,
     clock: u64,
-    sse_event: Arc<String>, // pre-built, shared with all SSE clients
+    sse_event: Arc<String>,
 }
 
 impl State {
-    fn new() -> Self {
-        let p = params();
+    fn new(params: &[Param]) -> Self {
         let mut s = State {
-            values: p
-                .iter()
-                .map(|p| Arc::new(format!("{:.6}", p.default)))
+            values: params.iter()
+                .map(|p| format!("{:.6}", p.default))
                 .collect(),
-            versions: vec![1; p.len()],
+            versions: vec![1; params.len()],
             clock: 1,
             sse_event: Arc::new(String::new()),
         };
-        s.sse_event = build_sse_event(&s);
+        s.sse_event = build_sse_event(&s, params);
         s
     }
 }
 
-// ---- UDS binary server ------------------------------------------
-//
-// OP_SET  [u8=1][u16 count][(u8 nlen)(name)(f64)]...  ->  [u8 0]
-// OP_GET  [u8=2][u64 cursor]  ->
-//         [u64 cursor][u16 count][(u16 index)(u8 vlen)(value)]...
-// OP_LIST [u8=3]  ->  [u16 count][(u8 nlen)(name)]...
-//         index of each name in the list is its permanent integer ID
-
-fn uds_serve(
-    r: &mut BufReader<UnixStream>,
-    w: &mut UnixStream,
-    state: &Arc<Mutex<State>>,
-    notify: &Arc<Condvar>,
-    index: &Arc<HashMap<String, usize>>,
-) -> io::Result<()> {
-    let p = params();
-    let resp_cap =
-        10 + p.iter().map(|p| 1 + p.name.len() + 1 + 24).sum::<usize>();
-    let mut resp = Vec::with_capacity(resp_cap);
-    let mut updates = Vec::<(usize, f64)>::with_capacity(p.len());
-    let mut nbuf = [0u8; 255];
-
-    loop {
-        let mut b1 = [0u8; 1];
-        r.read_exact(&mut b1)?;
-        match b1[0] {
-            op if op == Op::Set as u8 => {
-                let mut b2 = [0u8; 2];
-                r.read_exact(&mut b2)?;
-                let count = u16::from_ne_bytes(b2) as usize;
-                updates.clear();
-                for _ in 0..count {
-                    r.read_exact(&mut b1)?;
-                    let nlen = b1[0] as usize;
-                    r.read_exact(&mut nbuf[..nlen])?;
-                    let mut b8 = [0u8; 8];
-                    r.read_exact(&mut b8)?;
-                    let val = f64::from_ne_bytes(b8);
-                    if let Ok(name) = std::str::from_utf8(&nbuf[..nlen])
-                        && let Some(&i) = index.get(name) {
-                        updates.push((i, val));
-                    }
-                }
-                {
-                    let mut s = state.lock().unwrap();
-                    s.clock += 1;
-                    for &(i, v) in &updates {
-                        s.values[i] = Arc::new(format!("{:.6}", v));
-                        s.versions[i] = s.clock;
-                    }
-                    s.sse_event = build_sse_event(&s);
-                }
-                notify.notify_all();
-                w.write_all(&[0u8])?;
-            }
-
-            op if op == Op::Get as u8 => {
-                let mut b8 = [0u8; 8];
-                r.read_exact(&mut b8)?;
-                let cursor = u64::from_ne_bytes(b8);
-                resp.clear();
-                // [u64 new_cursor][u16 count] -- filled below
-                resp.extend_from_slice(&[0u8; 10]);
-                let mut count = 0u16;
-                {
-                    let s = state.lock().unwrap();
-                    resp[..8].copy_from_slice(&s.clock.to_ne_bytes());
-                    for (i, _) in params().iter().enumerate() {
-                        if s.versions[i] > cursor {
-                            resp.extend_from_slice(&(i as u16).to_ne_bytes());
-                            let v = &s.values[i];
-                            resp.push(v.len() as u8);
-                            resp.extend_from_slice(v.as_bytes());
-                            count += 1;
-                        }
-                    }
-                }
-                resp[8..10].copy_from_slice(&count.to_ne_bytes());
-                w.write_all(&resp)?;
-            }
-
-            op if op == Op::List as u8 => {
-                resp.clear();
-                resp.extend_from_slice(
-                    &(params().len() as u16).to_ne_bytes(),
-                );
-                for p in params() {
-                    resp.push(p.name.len() as u8);
-                    resp.extend_from_slice(p.name.as_bytes());
-                }
-                w.write_all(&resp)?;
-            }
-
-            _ => return Ok(()),
-        }
-    }
-}
-
-fn handle_uds_client(
-    stream: UnixStream,
-    state: Arc<Mutex<State>>,
-    notify: Arc<Condvar>,
-    index: Arc<HashMap<String, usize>>,
-) {
-    let mut w = stream.try_clone().unwrap();
-    let mut r = BufReader::new(stream);
-    let _ = uds_serve(&mut r, &mut w, &state, &notify, &index);
-}
-
-fn run_uds(
-    state: Arc<Mutex<State>>,
-    notify: Arc<Condvar>,
-    index: Arc<HashMap<String, usize>>,
-) {
-    let _ = std::fs::remove_file(UDS_PATH);
-    let listener = UnixListener::bind(UDS_PATH).expect("UDS bind");
-    eprintln!("UDS  {}", UDS_PATH);
-    for stream in listener.incoming().flatten() {
-        let s = Arc::clone(&state);
-        let n = Arc::clone(&notify);
-        let i = Arc::clone(&index);
-        thread::spawn(move || handle_uds_client(stream, s, n, i));
-    }
-}
-
-// ---- HTTP/SSE TCP server ----------------------------------------
-
-fn build_sse_event(s: &State) -> Arc<String> {
+fn build_sse_event(s: &State, params: &[Param]) -> Arc<String> {
     let mut ev = format!("data: {{\"c\":{},\"p\":{{", s.clock);
-    for (i, p) in params().iter().enumerate() {
-        if i > 0 {
-            ev.push(',');
-        }
+    for (i, p) in params.iter().enumerate() {
+        if i > 0 { ev.push(','); }
         ev.push('"');
         ev.push_str(&p.name);
         ev.push_str("\":");
@@ -216,6 +70,8 @@ fn build_sse_event(s: &State) -> Arc<String> {
     ev.push_str("}}\n\n");
     Arc::new(ev)
 }
+
+// ---- HTTP helpers -------------------------------------------
 
 struct Request {
     method: String,
@@ -238,7 +94,7 @@ fn parse_request(r: &mut impl BufRead) -> io::Result<Option<Request>> {
     };
     let mut words = request_line.splitn(3, ' ');
     let method = words.next().unwrap_or("").to_string();
-    let path = words.next().unwrap_or("/").to_string();
+    let path   = words.next().unwrap_or("/").to_string();
 
     let mut content_length = 0usize;
     loop {
@@ -270,9 +126,7 @@ fn respond(
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
          Access-Control-Expose-Headers: X-Cursor\r\n",
-        status,
-        text,
-        body.len()
+        status, text, body.len()
     );
     for (k, v) in extra {
         hdr.push_str(&format!("{}: {}\r\n", k, v));
@@ -282,10 +136,13 @@ fn respond(
     w.write_all(body)
 }
 
+// ---- SSE ----------------------------------------------------
+
 fn serve_sse(
     w: &mut impl Write,
     state: &Arc<Mutex<State>>,
     notify: &Arc<Condvar>,
+    min_interval: Duration,
 ) {
     let hdr = "HTTP/1.1 200 OK\r\n\
         Content-Type: text/event-stream\r\n\
@@ -297,6 +154,7 @@ fn serve_sse(
     }
 
     let mut cursor: u64 = 0;
+    let mut last_sent = Instant::now().checked_sub(min_interval).unwrap_or(Instant::now());
 
     loop {
         let event = {
@@ -306,20 +164,28 @@ fn serve_sse(
             cursor = s.clock;
             Arc::clone(&s.sse_event)
         };
+        let elapsed = last_sent.elapsed();
+        if elapsed < min_interval {
+            thread::sleep(min_interval - elapsed);
+        }
         if w.write_all(event.as_bytes()).is_err() {
             return;
         }
         if w.flush().is_err() {
             return;
         }
+        last_sent = Instant::now();
     }
 }
 
-fn handle_tcp_client(
+// ---- TCP request handler ------------------------------------
+
+fn handle(
     stream: TcpStream,
+    params: Arc<Vec<Param>>,
     state: Arc<Mutex<State>>,
     notify: Arc<Condvar>,
-    index: Arc<HashMap<String, usize>>,
+    min_sse_interval: Duration,
 ) {
     let mut writer = stream.try_clone().expect("clone");
     let mut reader = BufReader::new(stream);
@@ -331,71 +197,70 @@ fn handle_tcp_client(
         };
 
         if req.method == "GET" && req.path == "/events" {
-            serve_sse(&mut writer, &state, &notify);
+            serve_sse(&mut writer, &state, &notify, min_sse_interval);
             return;
         }
 
-        let result = match (req.method.as_str(), req.path.as_str()) {
-            // List param names -- used by browser and diagnostics
+        let result = match (req.method.as_str(), req.path.split('?').next().unwrap_or("")) {
+
+            // List parameter names
             ("GET", "/params") => {
-                let body: String = params()
-                    .iter()
+                let body: String = params.iter()
                     .map(|p| format!("{}\n", p.name))
                     .collect();
                 respond(&mut writer, 200, "OK", &[], body.as_bytes())
             }
 
-            // Set params from browser -- same binary body as UDS
-            // OP_SET (minus the opcode byte)
+            // Get changed values since cursor
+            ("GET", "/values") => {
+                let cursor: u64 = req.path.split_once('?')
+                    .and_then(|(_, q)| q.split('&')
+                        .find_map(|p| p.strip_prefix("cursor="))
+                        .and_then(|v| v.parse().ok()))
+                    .unwrap_or(0);
+                let (body, new_cursor) = {
+                    let s = state.lock().unwrap();
+                    let mut body = String::new();
+                    for (i, p) in params.iter().enumerate() {
+                        if s.versions[i] > cursor {
+                            body.push_str(&p.name);
+                            body.push('\t');
+                            body.push_str(&s.values[i]);
+                            body.push('\n');
+                        }
+                    }
+                    (body, s.clock)
+                };
+                respond(
+                    &mut writer, 200, "OK",
+                    &[("X-Cursor", &new_cursor.to_string())],
+                    body.as_bytes(),
+                )
+            }
+
+            // Set parameters (text: "name\tvalue\n" per line)
             ("PUT", "/params") => {
-                let b = &req.body;
-                if b.len() >= 2 {
-                    let count =
-                        u16::from_ne_bytes([b[0], b[1]]) as usize;
+                if let Ok(text) = std::str::from_utf8(&req.body) {
                     let mut s = state.lock().unwrap();
                     s.clock += 1;
-                    let mut pos = 2;
-                    for _ in 0..count {
-                        if pos >= b.len() {
-                            break;
+                    for line in text.lines() {
+                        if let Some((name, val)) = line.split_once('\t')
+                            && let Some(i) = params.iter().position(|p| p.name == name)
+                            && let Ok(v) = val.parse::<f64>() {
+                            s.values[i] = format!("{:.6}", v);
+                            s.versions[i] = s.clock;
                         }
-                        let nlen = b[pos] as usize;
-                        pos += 1;
-                        if pos + nlen + 8 > b.len() {
-                            break;
-                        }
-                        if let Ok(name) =
-                            std::str::from_utf8(&b[pos..pos + nlen])
-                        {
-                            let val = f64::from_ne_bytes(
-                                b[pos + nlen..pos + nlen + 8]
-                                    .try_into()
-                                    .unwrap(),
-                            );
-                            if let Some(&i) = index.get(name) {
-                                s.values[i] =
-                                    Arc::new(format!("{:.6}", val));
-                                s.versions[i] = s.clock;
-                            }
-                        }
-                        pos += nlen + 8;
                     }
-                    s.sse_event = build_sse_event(&s);
+                    s.sse_event = build_sse_event(&s, &params);
                 }
                 notify.notify_all();
                 respond(&mut writer, 200, "OK", &[], &[])
             }
 
-            // CORS preflight -- browser sends this before PUT/POST
             ("OPTIONS", _) => respond(
-                &mut writer,
-                204,
-                "No Content",
+                &mut writer, 204, "No Content",
                 &[
-                    (
-                        "Access-Control-Allow-Methods",
-                        "GET, PUT, OPTIONS",
-                    ),
+                    ("Access-Control-Allow-Methods", "GET, PUT, OPTIONS"),
                     ("Access-Control-Allow-Headers", "Content-Type"),
                 ],
                 &[],
@@ -409,53 +274,46 @@ fn handle_tcp_client(
     }
 }
 
-fn run_tcp(
-    state: Arc<Mutex<State>>,
-    notify: Arc<Condvar>,
-    index: Arc<HashMap<String, usize>>,
-) {
-    let listener = TcpListener::bind(TCP_ADDR).expect("TCP bind");
-    eprintln!("TCP  {}", TCP_ADDR);
-    for stream in listener.incoming().flatten() {
-        let s = Arc::clone(&state);
-        let n = Arc::clone(&notify);
-        let i = Arc::clone(&index);
-        thread::spawn(move || handle_tcp_client(stream, s, n, i));
-    }
-}
+// ---- main ---------------------------------------------------
 
-// ---- main -------------------------------------------------------
+unsafe extern "C" {
+    fn signal(signum: i32, handler: usize) -> usize;
+}
+const SIGPIPE: i32 = 13;
+const SIG_IGN: usize = 1;
 
 fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .expect("usage: param_serv <params.txt>");
-    let loaded = load_params(&path).unwrap_or_else(|e| {
-        eprintln!("error loading {}: {}", path, e);
-        std::process::exit(1);
-    });
-    PARAMS.set(loaded).ok();
+    let mut args = std::env::args().skip(1);
+    let path = args.next().expect("usage: param_serv <params.txt> [--max-sse-hz N]");
 
-    unsafe {
-        signal(SIGPIPE, SIG_IGN);
+    let mut max_sse_hz: f64 = 30.0;
+    while let Some(arg) = args.next() {
+        if arg == "--max-sse-hz"
+            && let Some(v) = args.next().and_then(|s| s.parse().ok()) {
+            max_sse_hz = v;
+        }
     }
+    let min_sse_interval = Duration::from_secs_f64(1.0 / max_sse_hz);
 
-    let state = Arc::new(Mutex::new(State::new()));
-    let notify = Arc::new(Condvar::new());
-    let index: Arc<HashMap<String, usize>> = Arc::new(
-        params()
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.name.clone(), i))
-            .collect(),
+    let params: Arc<Vec<Param>> = Arc::new(
+        load_params(&path).unwrap_or_else(|e| {
+            eprintln!("error loading {}: {}", path, e);
+            std::process::exit(1);
+        })
     );
 
-    {
+    unsafe { signal(SIGPIPE, SIG_IGN); }
+
+    let state = Arc::new(Mutex::new(State::new(&params)));
+    let notify = Arc::new(Condvar::new());
+
+    let listener = TcpListener::bind(TCP_ADDR).expect("TCP bind");
+    eprintln!("param_serv listening on {}", TCP_ADDR);
+
+    for stream in listener.incoming().flatten() {
+        let p = Arc::clone(&params);
         let s = Arc::clone(&state);
         let n = Arc::clone(&notify);
-        let i = Arc::clone(&index);
-        thread::spawn(move || run_uds(s, n, i));
+        thread::spawn(move || handle(stream, p, s, n, min_sse_interval));
     }
-
-    run_tcp(state, notify, index);
 }

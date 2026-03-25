@@ -1,5 +1,5 @@
 settings = {
-   max_sse_hz = 30,
+   max_sse_hz = 60,
 }
 
 params = {

@@ -15,8 +15,12 @@ fn main() -> std::io::Result<()> {
     let mut rng = 1;
 
     loop {
-        let updates: Vec<(&str, f64)> = names.iter()
-            .map(|n| (n.as_str(), xorshift(&mut rng)))
+        let vals: Vec<String> = names.iter()
+            .map(|_| format!("{:.6}", xorshift(&mut rng)))
+            .collect();
+        let updates: Vec<(&str, &str)> = names.iter()
+            .zip(vals.iter())
+            .map(|(n, v)| (n.as_str(), v.as_str()))
             .collect();
 
         c.set(&updates)?;

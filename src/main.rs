@@ -36,16 +36,41 @@ impl State {
     }
 }
 
-/// Convert internal numeric value to display name if param has opts.
+/// Convert internal value to display string.
+/// - opts: numeric index → option name
+/// - prec: format with N decimal digits grouped in threes
+/// - unit: append unit string
 fn display_value(val: &str, param: &Param) -> String {
-    if param.opts.is_empty() {
+    // Enumerated parameter
+    if !param.opts.is_empty() {
+        if let Ok(idx) = val.parse::<f64>() {
+            let i = idx as usize;
+            if i < param.opts.len() {
+                return param.opts[i].clone();
+            }
+        }
         return val.to_owned();
     }
-    if let Ok(idx) = val.parse::<f64>() {
-        let i = idx as usize;
-        if i < param.opts.len() {
-            return param.opts[i].clone();
-        }
+    // Numeric with precision/unit formatting
+    if let (Some(prec), Ok(n)) = (param.prec, val.parse::<f64>()) {
+        let raw = format!("{:.prec$}", n, prec = prec);
+        let formatted = if let Some(dot) = raw.find('.') {
+            let (int_part, dec_part) = raw.split_at(dot + 1);
+            let grouped: String = dec_part.chars().enumerate().map(|(i, c)| {
+                if i > 0 && i % 3 == 0 { format!(" {}", c) } else { c.to_string() }
+            }).collect();
+            format!("{}{}", int_part, grouped)
+        } else {
+            raw
+        };
+        return match &param.unit {
+            Some(u) => format!("{} {}", formatted, u),
+            None => formatted,
+        };
+    }
+    // Unit only (no prec)
+    if let Some(u) = &param.unit {
+        return format!("{} {}", val, u);
     }
     val.to_owned()
 }

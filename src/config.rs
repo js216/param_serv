@@ -1,18 +1,14 @@
-// Config loader for param_serv.
-//
-// Public interface is intentionally minimal so the parser can be replaced
-// with mlua (or any other Lua evaluator) by rewriting `load()` only.
-
+use mlua::prelude::*;
 use std::io;
 
 pub struct ParamDef {
     pub name: String,
     pub default: String,
-    #[allow(dead_code)]
     pub min: Option<f64>,
-    #[allow(dead_code)]
     pub max: Option<f64>,
-    pub opts: Vec<String>,  // index → display name
+    pub opts: Vec<String>,
+    pub prec: Option<usize>,
+    pub unit: Option<String>,
 }
 
 pub struct Config {
@@ -26,251 +22,47 @@ impl Default for Config {
     }
 }
 
-/// Load config from a Lua-subset data file.
-/// To swap in mlua: replace only the body of this function.
 pub fn load(path: &str) -> io::Result<Config> {
     let src = std::fs::read_to_string(path)?;
-    parse(&src).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    parse(&src).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
 
-// ---- Tokenizer ----------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq)]
-enum Tok {
-    Ident(String),
-    Str(String),
-    Num(f64),
-    Eq,
-    LBrace,
-    RBrace,
-    Comma,
-}
-
-fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
-    let mut toks = Vec::new();
-    let mut it = src.chars().peekable();
-    while let Some(&c) = it.peek() {
-        match c {
-            ' ' | '\t' | '\n' | '\r' => { it.next(); }
-
-            '-' => {
-                it.next();
-                if it.peek() == Some(&'-') {
-                    // comment: skip to end of line
-                    for ch in it.by_ref() { if ch == '\n' { break; } }
-                } else {
-                    // negative number
-                    let mut s = String::from('-');
-                    while it.peek().is_some_and(|&c| c.is_ascii_digit() || c == '.') {
-                        s.push(it.next().unwrap());
-                    }
-                    if s == "-" { return Err("bare '-'".into()); }
-                    toks.push(Tok::Num(s.parse().map_err(|_| format!("bad number: {s}"))?));
-                }
-            }
-
-            c if c.is_ascii_digit() => {
-                let mut s = String::new();
-                while it.peek().is_some_and(|&c| c.is_ascii_digit() || c == '.') {
-                    s.push(it.next().unwrap());
-                }
-                toks.push(Tok::Num(s.parse().map_err(|_| format!("bad number: {s}"))?));
-            }
-
-            c if c.is_alphabetic() || c == '_' => {
-                let mut s = String::new();
-                while it.peek().is_some_and(|&c| c.is_alphanumeric() || c == '_') {
-                    s.push(it.next().unwrap());
-                }
-                toks.push(Tok::Ident(s));
-            }
-
-            '"' => {
-                it.next();
-                let s: String = it.by_ref().take_while(|&c| c != '"').collect();
-                toks.push(Tok::Str(s));
-            }
-
-            '=' => { it.next(); toks.push(Tok::Eq); }
-            '{' => { it.next(); toks.push(Tok::LBrace); }
-            '}' => { it.next(); toks.push(Tok::RBrace); }
-            ',' => { it.next(); toks.push(Tok::Comma); }
-
-            c => return Err(format!("unexpected char: {c:?}")),
-        }
-    }
-    Ok(toks)
-}
-
-// ---- Parser -------------------------------------------------------------
-
-struct P<'a> {
-    t: &'a [Tok],
-    i: usize,
-}
-
-impl<'a> P<'a> {
-    fn peek(&self) -> Option<&'a Tok> { self.t.get(self.i) }
-
-    fn next(&mut self) -> Option<&'a Tok> {
-        let t = self.t.get(self.i);
-        self.i += 1;
-        t
-    }
-
-    fn eat_comma(&mut self) {
-        if self.peek() == Some(&Tok::Comma) { self.next(); }
-    }
-
-    fn expect_eq(&mut self) -> Result<(), String> {
-        match self.next() {
-            Some(Tok::Eq) => Ok(()),
-            t => Err(format!("expected '=', got {t:?}")),
-        }
-    }
-
-    fn expect_lbrace(&mut self) -> Result<(), String> {
-        match self.next() {
-            Some(Tok::LBrace) => Ok(()),
-            t => Err(format!("expected '{{', got {t:?}")),
-        }
-    }
-
-    fn scalar(&mut self) -> Result<Scalar, String> {
-        match self.next() {
-            Some(Tok::Num(n))   => Ok(Scalar::Num(*n)),
-            Some(Tok::Str(s))   => Ok(Scalar::Str(s.clone())),
-            Some(Tok::Ident(s)) => Ok(Scalar::Str(s.clone())),
-            t => Err(format!("expected scalar value, got {t:?}")),
-        }
-    }
-
-    // Parse { "str", "str", ... }
-    fn str_list(&mut self) -> Result<Vec<String>, String> {
-        self.expect_lbrace()?;
-        let mut items = Vec::new();
-        loop {
-            match self.peek() {
-                Some(Tok::RBrace) => { self.next(); break; }
-                Some(Tok::Str(_)) | Some(Tok::Ident(_)) => {
-                    items.push(self.scalar()?.to_string());
-                    self.eat_comma();
-                }
-                t => return Err(format!("expected string or '}}', got {t:?}")),
-            }
-        }
-        Ok(items)
-    }
-
-    // Parse { key = scalar, ... }
-    fn kv_table(&mut self) -> Result<Vec<(String, Scalar)>, String> {
-        self.expect_lbrace()?;
-        let mut pairs = Vec::new();
-        loop {
-            match self.peek() {
-                Some(Tok::RBrace) => { self.next(); break; }
-                Some(Tok::Ident(_)) => {
-                    let key = match self.next() {
-                        Some(Tok::Ident(k)) => k.clone(),
-                        _ => unreachable!(),
-                    };
-                    self.expect_eq()?;
-                    pairs.push((key, self.scalar()?));
-                    self.eat_comma();
-                }
-                t => return Err(format!("expected key or '}}', got {t:?}")),
-            }
-        }
-        Ok(pairs)
-    }
-}
-
-enum Scalar {
-    Num(f64),
-    Str(String),
-}
-
-impl Scalar {
-    fn num(self, key: &str) -> Result<f64, String> {
-        match self { Scalar::Num(n) => Ok(n), _ => Err(format!("expected number for '{key}'")) }
-    }
-    fn str(self, key: &str) -> Result<String, String> {
-        match self { Scalar::Str(s) => Ok(s), _ => Err(format!("expected string for '{key}'")) }
-    }
-    fn to_string(self) -> String {
-        match self { Scalar::Num(n) => format!("{}", n), Scalar::Str(s) => s }
-    }
-}
-
-// ---- Top-level parse ----------------------------------------------------
-
-fn parse(src: &str) -> Result<Config, String> {
-    let toks = tokenize(src)?;
-    let mut p = P { t: &toks, i: 0 };
+fn parse(src: &str) -> LuaResult<Config> {
+    let lua = Lua::new();
+    lua.load(src).exec()?;
     let mut cfg = Config::default();
 
-    while p.peek().is_some() {
-        let key = match p.next() {
-            Some(Tok::Ident(k)) => k.clone(),
-            t => return Err(format!("expected top-level key, got {t:?}")),
-        };
-        p.expect_eq()?;
-
-        match key.as_str() {
-            "settings" => {
-                for (k, v) in p.kv_table()? {
-                    if k.as_str() == "max_sse_hz" {
-                        cfg.max_sse_hz = v.num("max_sse_hz")?;
-                    }
-                }
-            }
-            "params" => {
-                p.expect_lbrace()?;
-                loop {
-                    match p.peek() {
-                        Some(Tok::RBrace) => { p.next(); break; }
-                        Some(Tok::LBrace) => {
-                            let mut name = String::new();
-                            let mut default = String::from("0");
-                            let mut min = None;
-                            let mut max = None;
-                            let mut opts = Vec::new();
-                            // Parse param entry manually to handle opts = {...}
-                            p.expect_lbrace()?;
-                            loop {
-                                match p.peek() {
-                                    Some(Tok::RBrace) => { p.next(); break; }
-                                    Some(Tok::Ident(_)) => {
-                                        let key = match p.next() {
-                                            Some(Tok::Ident(k)) => k.clone(),
-                                            _ => unreachable!(),
-                                        };
-                                        p.expect_eq()?;
-                                        match key.as_str() {
-                                            "name"    => name    = p.scalar()?.str("name")?,
-                                            "default" => default = p.scalar()?.to_string(),
-                                            "min"     => min     = Some(p.scalar()?.num("min")?),
-                                            "max"     => max     = Some(p.scalar()?.num("max")?),
-                                            "opts"    => opts     = p.str_list()?,
-                                            _         => { p.scalar()?; } // skip unknown
-                                        }
-                                        p.eat_comma();
-                                    }
-                                    t => return Err(format!("expected key or '}}', got {t:?}")),
-                                }
-                            }
-                            if name.is_empty() {
-                                return Err("param entry missing 'name'".into());
-                            }
-                            cfg.params.push(ParamDef { name, default, min, max, opts });
-                            p.eat_comma();
-                        }
-                        t => return Err(format!("expected '{{' or '}}', got {t:?}")),
-                    }
-                }
-            }
-            k => return Err(format!("unknown top-level key: '{k}'")),
+    // settings
+    if let Ok(settings) = lua.globals().get::<LuaTable>("settings") {
+        if let Ok(hz) = settings.get::<f64>("max_sse_hz") {
+            cfg.max_sse_hz = hz;
         }
+    }
+
+    // params
+    let params: LuaTable = lua.globals().get("params")?;
+    for entry in params.sequence_values::<LuaTable>() {
+        let t = entry?;
+        let name: String = t.get("name")?;
+        let default: String = match t.get::<LuaValue>("default")? {
+            LuaValue::Number(n) => format!("{}", n),
+            LuaValue::Integer(n) => format!("{}", n),
+            LuaValue::String(s) => s.to_str()?.to_owned(),
+            _ => "0".to_owned(),
+        };
+        let min: Option<f64> = t.get("min").ok();
+        let max: Option<f64> = t.get("max").ok();
+        let prec: Option<usize> = t.get::<Option<u32>>("prec").ok().flatten().map(|n| n as usize);
+        let unit: Option<String> = t.get("unit").ok();
+
+        let mut opts = Vec::new();
+        if let Ok(tbl) = t.get::<LuaTable>("opts") {
+            for v in tbl.sequence_values::<String>() {
+                opts.push(v?);
+            }
+        }
+
+        cfg.params.push(ParamDef { name, default, min, max, opts, prec, unit });
     }
 
     Ok(cfg)

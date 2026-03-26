@@ -25,7 +25,7 @@ impl State {
     fn new(params: &[Param]) -> Self {
         let mut s = State {
             values: params.iter()
-                .map(|p| format!("{:.6}", p.default))
+                .map(|p| p.default.clone())
                 .collect(),
             versions: vec![1; params.len()],
             clock: 1,
@@ -42,8 +42,9 @@ fn build_sse_event(s: &State, params: &[Param]) -> Arc<String> {
         if i > 0 { ev.push(','); }
         ev.push('"');
         ev.push_str(&p.name);
-        ev.push_str("\":");
-        ev.push_str(&s.values[i]);
+        ev.push_str("\":\"");
+        ev.push_str(&s.values[i].replace('\\', "\\\\").replace('"', "\\\""));
+        ev.push('"');
     }
     ev.push_str("}}\n\n");
     Arc::new(ev)

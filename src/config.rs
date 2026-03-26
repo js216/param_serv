@@ -7,7 +7,7 @@ use std::io;
 
 pub struct ParamDef {
     pub name: String,
-    pub default: f64,
+    pub default: String,
     #[allow(dead_code)]
     pub min: Option<f64>,
     #[allow(dead_code)]
@@ -179,6 +179,9 @@ impl Scalar {
     fn str(self, key: &str) -> Result<String, String> {
         match self { Scalar::Str(s) => Ok(s), _ => Err(format!("expected string for '{key}'")) }
     }
+    fn to_string(self) -> String {
+        match self { Scalar::Num(n) => format!("{}", n), Scalar::Str(s) => s }
+    }
 }
 
 // ---- Top-level parse ----------------------------------------------------
@@ -210,13 +213,13 @@ fn parse(src: &str) -> Result<Config, String> {
                         Some(Tok::RBrace) => { p.next(); break; }
                         Some(Tok::LBrace) => {
                             let mut name = String::new();
-                            let mut default = 0.0f64;
+                            let mut default = String::from("0");
                             let mut min = None;
                             let mut max = None;
                             for (k, v) in p.kv_table()? {
                                 match k.as_str() {
                                     "name"    => name    = v.str("name")?,
-                                    "default" => default = v.num("default")?,
+                                    "default" => default = v.to_string(),
                                     "min"     => min     = Some(v.num("min")?),
                                     "max"     => max     = Some(v.num("max")?),
                                     _ => {}

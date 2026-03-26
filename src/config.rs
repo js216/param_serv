@@ -12,6 +12,7 @@ pub struct ParamDef {
     pub min: Option<f64>,
     #[allow(dead_code)]
     pub max: Option<f64>,
+    pub opts: Vec<String>,  // index → display name
 }
 
 pub struct Config {
@@ -144,6 +145,23 @@ impl<'a> P<'a> {
         }
     }
 
+    // Parse { "str", "str", ... }
+    fn str_list(&mut self) -> Result<Vec<String>, String> {
+        self.expect_lbrace()?;
+        let mut items = Vec::new();
+        loop {
+            match self.peek() {
+                Some(Tok::RBrace) => { self.next(); break; }
+                Some(Tok::Str(_)) | Some(Tok::Ident(_)) => {
+                    items.push(self.scalar()?.to_string());
+                    self.eat_comma();
+                }
+                t => return Err(format!("expected string or '}}', got {t:?}")),
+            }
+        }
+        Ok(items)
+    }
+
     // Parse { key = scalar, ... }
     fn kv_table(&mut self) -> Result<Vec<(String, Scalar)>, String> {
         self.expect_lbrace()?;
@@ -216,19 +234,35 @@ fn parse(src: &str) -> Result<Config, String> {
                             let mut default = String::from("0");
                             let mut min = None;
                             let mut max = None;
-                            for (k, v) in p.kv_table()? {
-                                match k.as_str() {
-                                    "name"    => name    = v.str("name")?,
-                                    "default" => default = v.to_string(),
-                                    "min"     => min     = Some(v.num("min")?),
-                                    "max"     => max     = Some(v.num("max")?),
-                                    _ => {}
+                            let mut opts = Vec::new();
+                            // Parse param entry manually to handle opts = {...}
+                            p.expect_lbrace()?;
+                            loop {
+                                match p.peek() {
+                                    Some(Tok::RBrace) => { p.next(); break; }
+                                    Some(Tok::Ident(_)) => {
+                                        let key = match p.next() {
+                                            Some(Tok::Ident(k)) => k.clone(),
+                                            _ => unreachable!(),
+                                        };
+                                        p.expect_eq()?;
+                                        match key.as_str() {
+                                            "name"    => name    = p.scalar()?.str("name")?,
+                                            "default" => default = p.scalar()?.to_string(),
+                                            "min"     => min     = Some(p.scalar()?.num("min")?),
+                                            "max"     => max     = Some(p.scalar()?.num("max")?),
+                                            "opts"    => opts     = p.str_list()?,
+                                            _         => { p.scalar()?; } // skip unknown
+                                        }
+                                        p.eat_comma();
+                                    }
+                                    t => return Err(format!("expected key or '}}', got {t:?}")),
                                 }
                             }
                             if name.is_empty() {
                                 return Err("param entry missing 'name'".into());
                             }
-                            cfg.params.push(ParamDef { name, default, min, max });
+                            cfg.params.push(ParamDef { name, default, min, max, opts });
                             p.eat_comma();
                         }
                         t => return Err(format!("expected '{{' or '}}', got {t:?}")),

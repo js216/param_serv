@@ -36,14 +36,42 @@ impl State {
     }
 }
 
+/// Convert internal numeric value to display name if param has opts.
+fn display_value(val: &str, param: &Param) -> String {
+    if param.opts.is_empty() {
+        return val.to_owned();
+    }
+    if let Ok(idx) = val.parse::<f64>() {
+        let i = idx as usize;
+        if i < param.opts.len() {
+            return param.opts[i].clone();
+        }
+    }
+    val.to_owned()
+}
+
+/// Convert incoming value (name or index) to internal numeric string.
+fn intern_value(val: &str, param: &Param) -> String {
+    if param.opts.is_empty() {
+        return val.to_owned();
+    }
+    // Accept option name → convert to index
+    if let Some(i) = param.opts.iter().position(|o| o == val) {
+        return i.to_string();
+    }
+    // Accept numeric index directly
+    val.to_owned()
+}
+
 fn build_sse_event(s: &State, params: &[Param]) -> Arc<String> {
     let mut ev = format!("data: {{\"c\":{},\"p\":{{", s.clock);
     for (i, p) in params.iter().enumerate() {
         if i > 0 { ev.push(','); }
+        let dv = display_value(&s.values[i], p);
         ev.push('"');
         ev.push_str(&p.name);
         ev.push_str("\":\"");
-        ev.push_str(&s.values[i].replace('\\', "\\\\").replace('"', "\\\""));
+        ev.push_str(&dv.replace('\\', "\\\\").replace('"', "\\\""));
         ev.push('"');
     }
     ev.push_str("}}\n\n");
@@ -204,7 +232,7 @@ fn handle(
                         if s.versions[i] > cursor {
                             body.push_str(&p.name);
                             body.push('\t');
-                            body.push_str(&s.values[i]);
+                            body.push_str(&display_value(&s.values[i], p));
                             body.push('\n');
                         }
                     }
@@ -225,7 +253,7 @@ fn handle(
                     for line in text.lines() {
                         if let Some((name, val)) = line.split_once('\t')
                             && let Some(i) = params.iter().position(|p| p.name == name) {
-                            s.values[i] = val.to_owned();
+                            s.values[i] = intern_value(val, &params[i]);
                             s.versions[i] = s.clock;
                         }
                     }

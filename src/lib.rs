@@ -2,10 +2,39 @@
 // Author: Jakob Kastelic
 // Copyright (c) 2026 Stanford Research Systems, Inc.
 
+pub mod config;
+
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
 pub const TCP_ADDR: &str = "127.0.0.1:7777";
+
+/// Param metadata returned by `Connection::list()`.
+pub struct ParamInfo {
+    pub name: String,
+    pub opts: Vec<String>,
+    pub prec: Option<usize>,
+    pub unit: Option<String>,
+}
+
+/// Parse a single `/params` response line into a `ParamInfo`.
+/// Format: `name[\topts:A,B,C][\tprec:N][\tunit:U]`
+pub fn parse_param_line(line: &str) -> Option<ParamInfo> {
+    let mut fields = line.split('\t');
+    let name = fields.next()?.to_owned();
+    if name.is_empty() { return None; }
+    let mut info = ParamInfo { name, opts: Vec::new(), prec: None, unit: None };
+    for field in fields {
+        if let Some(v) = field.strip_prefix("opts:") {
+            info.opts = v.split(',').map(str::to_owned).collect();
+        } else if let Some(v) = field.strip_prefix("prec:") {
+            info.prec = v.parse().ok();
+        } else if let Some(v) = field.strip_prefix("unit:") {
+            info.unit = Some(v.to_owned());
+        }
+    }
+    Some(info)
+}
 
 pub struct Connection {
     r: BufReader<TcpStream>,
@@ -19,11 +48,11 @@ impl Connection {
         Ok(Self { w: s.try_clone()?, r: BufReader::new(s), cursor: 0 })
     }
 
-    /// Returns all parameter names in index order.
-    pub fn list(&mut self) -> io::Result<Vec<String>> {
+    /// Returns param metadata for all parameters in index order.
+    pub fn list(&mut self) -> io::Result<Vec<ParamInfo>> {
         self.send("GET /params HTTP/1.1\r\n\r\n")?;
         let (body, _) = self.recv()?;
-        Ok(body.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
+        Ok(body.lines().filter_map(parse_param_line).collect())
     }
 
     /// Returns parameters changed since the last call as (name, value) pairs.

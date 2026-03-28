@@ -2,9 +2,7 @@
 // Author: Jakob Kastelic
 // Copyright (c) 2026 Stanford Research Systems, Inc.
 
-mod config;
-
-use config::ParamDef as Param;
+use param_serv::config::ParamDef as Param;
 use param_serv::TCP_ADDR;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -36,45 +34,6 @@ impl State {
     }
 }
 
-/// Convert internal value to display string.
-/// - opts: numeric index → option name
-/// - prec: format with N decimal digits grouped in threes
-/// - unit: append unit string
-fn display_value(val: &str, param: &Param) -> String {
-    // Enumerated parameter
-    if !param.opts.is_empty() {
-        if let Ok(idx) = val.parse::<f64>() {
-            let i = idx as usize;
-            if i < param.opts.len() {
-                return param.opts[i].clone();
-            }
-        }
-        return val.to_owned();
-    }
-    // Numeric with precision/unit formatting
-    if let (Some(prec), Ok(n)) = (param.prec, val.parse::<f64>()) {
-        let raw = format!("{:.prec$}", n, prec = prec);
-        let formatted = if let Some(dot) = raw.find('.') {
-            let (int_part, dec_part) = raw.split_at(dot + 1);
-            let grouped: String = dec_part.chars().enumerate().map(|(i, c)| {
-                if i > 0 && i % 3 == 0 { format!(" {}", c) } else { c.to_string() }
-            }).collect();
-            format!("{}{}", int_part, grouped)
-        } else {
-            raw
-        };
-        return match &param.unit {
-            Some(u) => format!("{} {}", formatted, u),
-            None => formatted,
-        };
-    }
-    // Unit only (no prec)
-    if let Some(u) = &param.unit {
-        return format!("{} {}", val, u);
-    }
-    val.to_owned()
-}
-
 /// Convert incoming value (name or index) to internal numeric string.
 fn intern_value(val: &str, param: &Param) -> String {
     if param.opts.is_empty() {
@@ -92,11 +51,10 @@ fn build_sse_event(s: &State, params: &[Param]) -> Arc<String> {
     let mut ev = format!("data: {{\"c\":{},\"p\":{{", s.clock);
     for (i, p) in params.iter().enumerate() {
         if i > 0 { ev.push(','); }
-        let dv = display_value(&s.values[i], p);
         ev.push('"');
         ev.push_str(&p.name);
         ev.push_str("\":\"");
-        ev.push_str(&dv.replace('\\', "\\\\").replace('"', "\\\""));
+        ev.push_str(&s.values[i].replace('\\', "\\\\").replace('"', "\\\""));
         ev.push('"');
     }
     ev.push_str("}}\n\n");
@@ -235,10 +193,24 @@ fn handle(
 
         let result = match (req.method.as_str(), req.path.split('?').next().unwrap_or("")) {
 
-            // List parameter names
+            // List parameters with metadata
             ("GET", "/params") => {
                 let body: String = params.iter()
-                    .map(|p| format!("{}\n", p.name))
+                    .map(|p| {
+                        let mut line = p.name.clone();
+                        if !p.opts.is_empty() {
+                            line.push_str("\topts:");
+                            line.push_str(&p.opts.join(","));
+                        }
+                        if let Some(prec) = p.prec {
+                            line.push_str(&format!("\tprec:{}", prec));
+                        }
+                        if let Some(ref u) = p.unit {
+                            line.push_str(&format!("\tunit:{}", u));
+                        }
+                        line.push('\n');
+                        line
+                    })
                     .collect();
                 respond(&mut writer, 200, "OK", &[], body.as_bytes())
             }
@@ -257,7 +229,7 @@ fn handle(
                         if s.versions[i] > cursor {
                             body.push_str(&p.name);
                             body.push('\t');
-                            body.push_str(&display_value(&s.values[i], p));
+                            body.push_str(&s.values[i]);
                             body.push('\n');
                         }
                     }
@@ -316,7 +288,7 @@ const SIG_IGN: usize = 1;
 fn main() {
     let path = std::env::args().nth(1).expect("usage: param_serv <config.txt>");
 
-    let cfg = config::load(&path).unwrap_or_else(|e| {
+    let cfg = param_serv::config::load(&path).unwrap_or_else(|e| {
         eprintln!("error loading {}: {}", path, e);
         std::process::exit(1);
     });

@@ -14,14 +14,7 @@ pub struct ParamDef {
 }
 
 pub struct Config {
-    pub max_sse_hz: f64,
     pub params: Vec<ParamDef>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config { max_sse_hz: 30.0, params: Vec::new() }
-    }
 }
 
 pub fn load(path: &str) -> io::Result<Config> {
@@ -32,14 +25,7 @@ pub fn load(path: &str) -> io::Result<Config> {
 fn parse(src: &str) -> LuaResult<Config> {
     let lua = Lua::new();
     lua.load(src).exec()?;
-    let mut cfg = Config::default();
-
-    // settings
-    if let Ok(settings) = lua.globals().get::<LuaTable>("settings") {
-        if let Ok(hz) = settings.get::<f64>("max_sse_hz") {
-            cfg.max_sse_hz = hz;
-        }
-    }
+    let mut cfg = Config { params: Vec::new() };
 
     // params
     let params: LuaTable = lua.globals().get("params")?;

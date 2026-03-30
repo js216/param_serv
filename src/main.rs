@@ -8,7 +8,6 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
 // ---- State --------------------------------------------------
 
@@ -23,12 +22,8 @@ struct State {
 impl State {
     fn new(params: &[Param]) -> Self {
         let mut s = State {
-            values: params.iter()
-                .map(|p| p.default.clone())
-                .collect(),
-            units: params.iter()
-                .map(|p| p.unit.clone())
-                .collect(),
+            values: params.iter().map(|p| p.default.clone()).collect(),
+            units: params.iter().map(|p| p.unit.clone()).collect(),
             versions: vec![1; params.len()],
             clock: 1,
             sse_event: Arc::new(String::new()),
@@ -38,16 +33,11 @@ impl State {
     }
 }
 
-/// Convert incoming value (name or index) to internal numeric string.
 fn intern_value(val: &str, param: &Param) -> String {
-    if param.opts.is_empty() {
-        return val.to_owned();
-    }
-    // Accept option name → convert to index
+    if param.opts.is_empty() { return val.to_owned(); }
     if let Some(i) = param.opts.iter().position(|o| o == val) {
         return i.to_string();
     }
-    // Accept numeric index directly
     val.to_owned()
 }
 
@@ -75,9 +65,7 @@ struct Request {
 
 fn read_line(r: &mut impl BufRead) -> io::Result<Option<String>> {
     let mut line = String::new();
-    if r.read_line(&mut line)? == 0 {
-        return Ok(None);
-    }
+    if r.read_line(&mut line)? == 0 { return Ok(None); }
     Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
 }
 
@@ -88,8 +76,7 @@ fn parse_request(r: &mut impl BufRead) -> io::Result<Option<Request>> {
     };
     let mut words = request_line.splitn(3, ' ');
     let method = words.next().unwrap_or("").to_string();
-    let path   = words.next().unwrap_or("/").to_string();
-
+    let path = words.next().unwrap_or("/").to_string();
     let mut content_length = 0usize;
     loop {
         match read_line(r)? {
@@ -109,11 +96,8 @@ fn parse_request(r: &mut impl BufRead) -> io::Result<Option<Request>> {
 }
 
 fn respond(
-    w: &mut impl Write,
-    status: u16,
-    text: &str,
-    extra: &[(&str, &str)],
-    body: &[u8],
+    w: &mut impl Write, status: u16, text: &str,
+    extra: &[(&str, &str)], body: &[u8],
 ) -> io::Result<()> {
     let mut hdr = format!(
         "HTTP/1.1 {} {}\r\n\
@@ -136,20 +120,15 @@ fn serve_sse(
     w: &mut impl Write,
     state: &Arc<Mutex<State>>,
     notify: &Arc<Condvar>,
-    min_interval: Duration,
 ) {
     let hdr = "HTTP/1.1 200 OK\r\n\
         Content-Type: text/event-stream\r\n\
         Cache-Control: no-cache\r\n\
         Access-Control-Allow-Origin: *\r\n\
         \r\n";
-    if w.write_all(hdr.as_bytes()).is_err() {
-        return;
-    }
+    if w.write_all(hdr.as_bytes()).is_err() { return; }
 
     let mut cursor: u64 = 0;
-    let mut last_sent = Instant::now().checked_sub(min_interval).unwrap_or(Instant::now());
-
     loop {
         let event = {
             let s = notify
@@ -158,17 +137,8 @@ fn serve_sse(
             cursor = s.clock;
             Arc::clone(&s.sse_event)
         };
-        let elapsed = last_sent.elapsed();
-        if elapsed < min_interval {
-            thread::sleep(min_interval - elapsed);
-        }
-        if w.write_all(event.as_bytes()).is_err() {
-            return;
-        }
-        if w.flush().is_err() {
-            return;
-        }
-        last_sent = Instant::now();
+        if w.write_all(event.as_bytes()).is_err() { return; }
+        if w.flush().is_err() { return; }
     }
 }
 
@@ -179,7 +149,6 @@ fn handle(
     params: Arc<Vec<Param>>,
     state: Arc<Mutex<State>>,
     notify: Arc<Condvar>,
-    min_sse_interval: Duration,
 ) {
     let mut writer = stream.try_clone().expect("clone");
     let mut reader = BufReader::new(stream);
@@ -191,13 +160,12 @@ fn handle(
         };
 
         if req.method == "GET" && req.path == "/events" {
-            serve_sse(&mut writer, &state, &notify, min_sse_interval);
+            serve_sse(&mut writer, &state, &notify);
             return;
         }
 
         let result = match (req.method.as_str(), req.path.split('?').next().unwrap_or("")) {
 
-            // List parameters with metadata
             ("GET", "/params") => {
                 let s = state.lock().unwrap();
                 let body: String = params.iter().enumerate()
@@ -237,7 +205,6 @@ fn handle(
                 respond(&mut writer, 200, "OK", &[], body.as_bytes())
             }
 
-            // Get changed values since cursor
             ("GET", "/values") => {
                 let cursor: u64 = req.path.split_once('?')
                     .and_then(|(_, q)| q.split('&')
@@ -264,7 +231,6 @@ fn handle(
                 )
             }
 
-            // Set parameters (text: "name\tvalue\n" per line)
             ("PUT", "/params") => {
                 if let Ok(text) = std::str::from_utf8(&req.body) {
                     let mut s = state.lock().unwrap();
@@ -282,7 +248,6 @@ fn handle(
                 respond(&mut writer, 200, "OK", &[], &[])
             }
 
-            // Set display unit for a parameter
             ("PUT", "/unit") => {
                 if let Ok(text) = std::str::from_utf8(&req.body) {
                     let mut s = state.lock().unwrap();
@@ -309,9 +274,7 @@ fn handle(
 
             _ => respond(&mut writer, 404, "Not Found", &[], &[]),
         };
-        if result.is_err() {
-            return;
-        }
+        if result.is_err() { return; }
     }
 }
 
@@ -331,7 +294,6 @@ fn main() {
         std::process::exit(1);
     });
 
-    let min_sse_interval = Duration::from_secs_f64(1.0 / cfg.max_sse_hz);
     let params: Arc<Vec<Param>> = Arc::new(cfg.params);
 
     unsafe { signal(SIGPIPE, SIG_IGN); }
@@ -346,6 +308,6 @@ fn main() {
         let p = Arc::clone(&params);
         let s = Arc::clone(&state);
         let n = Arc::clone(&notify);
-        thread::spawn(move || handle(stream, p, s, n, min_sse_interval));
+        thread::spawn(move || handle(stream, p, s, n));
     }
 }

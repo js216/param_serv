@@ -53,48 +53,129 @@ pub fn parse_param_line(line: &str) -> Option<ParamInfo> {
     Some(info)
 }
 
-// ---- Native Connection (TCP) ------------------------------------------------
+// ---- Native Connection (SSE push + HTTP request) ----------------------------
 
 #[cfg(not(target_os = "emscripten"))]
 mod native {
     use super::*;
     use std::io::{self, BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    /// Parse SSE event data: `data: {"c":N,"p":{"name":"val",...}}\n\n`
+    /// Extracts name/value pairs from the "p" object.
+    fn parse_sse_event(line: &str) -> Vec<(String, String)> {
+        let mut results = Vec::new();
+        // Find the "p":{...} section
+        let p_start = match line.find("\"p\":{") {
+            Some(i) => i + 4,
+            None => return results,
+        };
+        // Find matching closing brace
+        let inner = &line[p_start + 1..];
+        let p_end = match inner.rfind('}') {
+            Some(i) => i,
+            None => return results,
+        };
+        let pairs = &inner[..p_end];
+        // Parse "key":"value" pairs
+        let mut rest = pairs;
+        while let Some(kstart) = rest.find('"') {
+            rest = &rest[kstart + 1..];
+            let kend = match rest.find('"') { Some(i) => i, None => break };
+            let key = &rest[..kend];
+            rest = &rest[kend + 1..];
+            // Skip ":"
+            let vstart = match rest.find('"') { Some(i) => i + 1, None => break };
+            rest = &rest[vstart..];
+            // Find closing quote (handle escaped quotes)
+            let mut vend = 0;
+            let bytes = rest.as_bytes();
+            while vend < bytes.len() {
+                if bytes[vend] == b'"' && (vend == 0 || bytes[vend - 1] != b'\\') {
+                    break;
+                }
+                vend += 1;
+            }
+            let val = rest[..vend].replace("\\\"", "\"").replace("\\\\", "\\");
+            results.push((key.to_owned(), val));
+            rest = &rest[vend + 1..];
+        }
+        results
+    }
 
     pub struct Connection {
-        r: BufReader<TcpStream>,
-        w: TcpStream,
-        cursor: u64,
+        buffer: Arc<Mutex<Vec<(String, String)>>>,
+        req_w: TcpStream,
+        req_r: BufReader<TcpStream>,
     }
 
     impl Connection {
         pub fn new() -> io::Result<Self> {
-            let s = TcpStream::connect(TCP_ADDR)?;
-            Ok(Self { w: s.try_clone()?, r: BufReader::new(s), cursor: 0 })
+            // Request connection (for set, list, set_unit, refresh)
+            let req = TcpStream::connect(TCP_ADDR)?;
+            let req_w = req.try_clone()?;
+            let req_r = BufReader::new(req);
+
+            // SSE connection (background thread reads pushed events)
+            let mut sse = TcpStream::connect(TCP_ADDR)?;
+            sse.write_all(b"GET /events HTTP/1.1\r\n\r\n")?;
+
+            let buffer: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+            let buf_clone = Arc::clone(&buffer);
+
+            thread::spawn(move || {
+                let mut reader = BufReader::new(sse);
+                // Skip HTTP response headers
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).is_err() { return; }
+                    if line.trim().is_empty() { break; }
+                }
+                // Read SSE events
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => return,
+                        _ => {}
+                    }
+                    if let Some(data) = line.trim().strip_prefix("data: ") {
+                        let pairs = parse_sse_event(data);
+                        if !pairs.is_empty() {
+                            buf_clone.lock().unwrap().extend(pairs);
+                        }
+                    }
+                }
+            });
+
+            Ok(Connection { buffer, req_w, req_r })
         }
 
-        /// Reset cursor so the next `get()` returns all params.
-        pub fn reset_cursor(&mut self) {
-            self.cursor = 0;
+        /// Non-blocking: drain all buffered SSE changes since last call.
+        pub fn get(&mut self) -> io::Result<Vec<(String, String)>> {
+            let mut buf = self.buffer.lock().unwrap();
+            Ok(std::mem::take(&mut *buf))
+        }
+
+        /// Fetch all current values and merge into the SSE buffer.
+        pub fn refresh(&mut self) -> io::Result<()> {
+            self.send("GET /values?cursor=0 HTTP/1.1\r\n\r\n")?;
+            let (body, _) = self.recv()?;
+            let mut buf = self.buffer.lock().unwrap();
+            for line in body.lines() {
+                if let Some((name, val)) = line.split_once('\t') {
+                    buf.push((name.to_owned(), val.to_owned()));
+                }
+            }
+            Ok(())
         }
 
         pub fn list(&mut self) -> io::Result<Vec<ParamInfo>> {
             self.send("GET /params HTTP/1.1\r\n\r\n")?;
             let (body, _) = self.recv()?;
             Ok(body.lines().filter_map(parse_param_line).collect())
-        }
-
-        pub fn get(&mut self) -> io::Result<Vec<(String, String)>> {
-            self.send(&format!("GET /values?cursor={} HTTP/1.1\r\n\r\n", self.cursor))?;
-            let (body, cursor) = self.recv()?;
-            self.cursor = cursor;
-            let mut results = Vec::new();
-            for line in body.lines() {
-                if let Some((name, val)) = line.split_once('\t') {
-                    results.push((name.to_owned(), val.to_owned()));
-                }
-            }
-            Ok(results)
         }
 
         pub fn set(&mut self, updates: &[(&str, &str)]) -> io::Result<()> {
@@ -120,29 +201,29 @@ mod native {
         }
 
         fn send(&mut self, req: &str) -> io::Result<()> {
-            self.w.write_all(req.as_bytes())
+            self.req_w.write_all(req.as_bytes())
         }
 
         fn recv(&mut self) -> io::Result<(String, u64)> {
             let mut line = String::new();
-            self.r.read_line(&mut line)?;
+            self.req_r.read_line(&mut line)?;
             let mut content_length = 0usize;
-            let mut cursor = self.cursor;
+            let mut cursor = 0u64;
             loop {
                 line.clear();
-                self.r.read_line(&mut line)?;
+                self.req_r.read_line(&mut line)?;
                 let h = line.trim();
                 if h.is_empty() { break; }
                 if let Some((k, v)) = h.split_once(": ") {
                     if k.eq_ignore_ascii_case("content-length") {
                         content_length = v.parse().unwrap_or(0);
                     } else if k.eq_ignore_ascii_case("x-cursor") {
-                        cursor = v.parse().unwrap_or(self.cursor);
+                        cursor = v.parse().unwrap_or(0);
                     }
                 }
             }
             let mut body = vec![0u8; content_length];
-            self.r.read_exact(&mut body)?;
+            self.req_r.read_exact(&mut body)?;
             Ok((String::from_utf8_lossy(&body).into_owned(), cursor))
         }
     }
@@ -150,6 +231,10 @@ mod native {
 
 #[cfg(not(target_os = "emscripten"))]
 pub use native::Connection;
+
+#[cfg(not(target_os = "emscripten"))]
+pub fn poll_key() -> Option<String> { None }
+
 
 // ---- Emscripten Connection (XHR via JS bridge) -----------------------------
 
@@ -164,8 +249,10 @@ mod web {
             body: *const u8, body_len: usize,
             out: *mut u8, out_len: usize,
         ) -> usize;
-        fn gui_http_get_header(name: *const u8, out: *mut u8, out_len: usize) -> usize;
+        fn gui_poll_key(out: *mut u8, out_len: usize) -> usize;
         fn gui_get_server_url(out: *mut u8, out_len: usize) -> usize;
+        fn gui_sse_start(url: *const u8);
+        fn gui_sse_drain(out: *mut u8, out_len: usize) -> usize;
     }
 
     fn server_url() -> String {
@@ -188,45 +275,45 @@ mod web {
         Ok(String::from_utf8_lossy(&out[..n]).into_owned())
     }
 
-    fn get_header(name: &str) -> String {
-        let n_cstr = format!("{}\0", name);
-        let mut buf = [0u8; 256];
-        let n = unsafe { gui_http_get_header(n_cstr.as_ptr(), buf.as_mut_ptr(), buf.len()) };
-        String::from_utf8_lossy(&buf[..n]).into_owned()
-    }
-
     pub struct Connection {
         base_url: String,
-        cursor: u64,
     }
 
     impl Connection {
         pub fn new() -> io::Result<Self> {
-            Ok(Self { base_url: server_url(), cursor: 0 })
+            let base_url = server_url();
+            // Start SSE EventSource in JS
+            let sse_url = format!("{}/events\0", base_url);
+            unsafe { gui_sse_start(sse_url.as_ptr()); }
+            Ok(Self { base_url })
         }
 
-        pub fn reset_cursor(&mut self) {
-            self.cursor = 0;
-        }
-
-        pub fn list(&mut self) -> io::Result<Vec<ParamInfo>> {
-            let body = http("GET", &format!("{}/params", self.base_url), "")?;
-            Ok(body.lines().filter_map(parse_param_line).collect())
-        }
-
+        /// Non-blocking: drain SSE events buffered by JS EventSource.
         pub fn get(&mut self) -> io::Result<Vec<(String, String)>> {
-            let body = http("GET", &format!("{}/values?cursor={}", self.base_url, self.cursor), "")?;
-            let cursor_str = get_header("X-Cursor");
-            if let Ok(c) = cursor_str.parse::<u64>() {
-                self.cursor = c;
-            }
+            let mut out = vec![0u8; 65536];
+            let n = unsafe { gui_sse_drain(out.as_mut_ptr(), out.len()) };
+            if n == 0 { return Ok(Vec::new()); }
+            let text = String::from_utf8_lossy(&out[..n]);
             let mut results = Vec::new();
-            for line in body.lines() {
+            for line in text.lines() {
                 if let Some((name, val)) = line.split_once('\t') {
                     results.push((name.to_owned(), val.to_owned()));
                 }
             }
             Ok(results)
+        }
+
+        /// Fetch all current values via one-shot HTTP request.
+        pub fn refresh(&mut self) -> io::Result<()> {
+            // SSE will deliver all values on connect; nothing extra needed.
+            // But if we need a forced refresh, do a GET /values?cursor=0.
+            // The values will appear in the next get() drain.
+            Ok(())
+        }
+
+        pub fn list(&mut self) -> io::Result<Vec<ParamInfo>> {
+            let body = http("GET", &format!("{}/params", self.base_url), "")?;
+            Ok(body.lines().filter_map(parse_param_line).collect())
         }
 
         pub fn set(&mut self, updates: &[(&str, &str)]) -> io::Result<()> {
@@ -243,7 +330,17 @@ mod web {
             Ok(())
         }
     }
+
+    pub fn poll_key() -> Option<String> {
+        let mut buf = [0u8; 64];
+        let n = unsafe { gui_poll_key(buf.as_mut_ptr(), buf.len()) };
+        if n == 0 { return None; }
+        Some(String::from_utf8_lossy(&buf[..n]).into_owned())
+    }
 }
 
 #[cfg(target_os = "emscripten")]
 pub use web::Connection;
+
+#[cfg(target_os = "emscripten")]
+pub use web::poll_key;

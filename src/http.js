@@ -1,7 +1,41 @@
 // JS bridge for param_serv::Connection on emscripten/WASM builds.
-// Provides synchronous HTTP via XMLHttpRequest.
+// SSE for pushed events, synchronous XHR for requests.
 
 mergeInto(LibraryManager.library, {
+    // --- SSE (push) ---
+
+    gui_sse_start: function(url_ptr) {
+        var url = UTF8ToString(url_ptr);
+        if (window._sse_source) window._sse_source.close();
+        window._sse_buffer = [];
+        var es = new EventSource(url);
+        es.onmessage = function(e) {
+            try {
+                var msg = JSON.parse(e.data);
+                if (msg.p) {
+                    var buf = window._sse_buffer;
+                    for (var k in msg.p) {
+                        buf.push(k + '\t' + msg.p[k]);
+                    }
+                }
+            } catch (err) {}
+        };
+        window._sse_source = es;
+    },
+
+    gui_sse_drain: function(out_ptr, out_len) {
+        var buf = window._sse_buffer || [];
+        if (buf.length === 0) return 0;
+        var text = buf.join('\n');
+        window._sse_buffer = [];
+        var n = lengthBytesUTF8(text);
+        if (n >= out_len) n = out_len - 1;
+        stringToUTF8(text, out_ptr, out_len);
+        return n;
+    },
+
+    // --- HTTP (request/response) ---
+
     gui_http_request: function(method_ptr, url_ptr, body_ptr, body_len, out_ptr, out_len) {
         var method = UTF8ToString(method_ptr);
         var url = UTF8ToString(url_ptr);
@@ -15,13 +49,6 @@ mergeInto(LibraryManager.library, {
         return lengthBytesUTF8(resp);
     },
 
-    gui_http_get_header: function(name_ptr, out_ptr, out_len) {
-        var name = UTF8ToString(name_ptr);
-        var val = (window._last_xhr && window._last_xhr.getResponseHeader(name)) || '';
-        stringToUTF8(val, out_ptr, out_len);
-        return lengthBytesUTF8(val);
-    },
-
     gui_get_server_url: function(out_ptr, out_len) {
         var url = window._param_serv_url || 'http://127.0.0.1:7777';
         stringToUTF8(url, out_ptr, out_len);
@@ -32,5 +59,14 @@ mergeInto(LibraryManager.library, {
         if (!window._led_state) window._led_state = {};
         var name = UTF8ToString(name_ptr);
         window._led_state[name] = value ? '1' : '0';
+    },
+
+    gui_poll_key: function(out_ptr, out_len) {
+        var queue = window._key_queue || [];
+        if (queue.length === 0) return 0;
+        var key = queue.shift();
+        window._key_queue = queue;
+        stringToUTF8(key, out_ptr, out_len);
+        return lengthBytesUTF8(key);
     },
 });

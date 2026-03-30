@@ -20,7 +20,7 @@ fn main() -> std::io::Result<()> {
             .collect();
         let updates: Vec<(&str, &str)> = names.iter()
             .zip(vals.iter())
-            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .map(|(n, v)| (n.name.as_str(), v.as_str()))
             .collect();
 
         c.set(&updates)?;

@@ -49,6 +49,10 @@ fn main() {
     let mut rng_seed: u64 = 12345;
     let mut internal_freq: f64 = 1000.0;
     let mut is_external = false;
+    let mut dem1_gain: f64 = 0.0;
+    let mut dem2_gain: f64 = 0.0;
+    let mut dem1_input: usize = 0;
+    let mut dem2_input: usize = 1;
 
     loop {
         t += 0.033;
@@ -61,6 +65,10 @@ fn main() {
                 "ref_frequency" if !is_external => {
                     if let Ok(f) = v.parse::<f64>() { internal_freq = f; }
                 }
+                "dem1_gain" => { if let Ok(g) = v.parse::<f64>() { dem1_gain = g; } }
+                "dem2_gain" => { if let Ok(g) = v.parse::<f64>() { dem2_gain = g; } }
+                "dem1_input" => { if let Ok(i) = v.parse::<usize>() { dem1_input = i; } }
+                "dem2_input" => { if let Ok(i) = v.parse::<usize>() { dem2_input = i; } }
                 _ => {}
             }
         }
@@ -72,34 +80,50 @@ fn main() {
             let _ = conn.set(&[("ref_frequency", &freq_s)]);
         }
 
-        let d1x = (t).sin() * 0.01;
-        let d1y = (t * 0.7).cos() * 0.01;
+        // Simulate per-channel signals (different waveforms per channel)
+        let ch_signals: [(f64, f64, f64); 4] = [
+            ((t).sin() * 0.001,       (t * 0.7).cos() * 0.001,       (t * 0.3).sin() * 5.0),
+            ((t * 1.3 + 1.0).sin() * 0.0005, (t * 0.9 + 2.0).cos() * 0.0005, (t * 0.2).cos() * 3.0),
+            ((t * 0.8).sin() * 0.002, (t * 1.1).cos() * 0.002,       (t * 0.5).sin() * 10.0),
+            ((t * 0.6 + 3.0).sin() * 0.0008, (t * 1.4 + 1.0).cos() * 0.0008, (t * 0.4).cos() * 7.0),
+        ];
+
+        // Demod 1 reads from its selected channel
+        let (d1x, d1y, d1_phase_v) = ch_signals[dem1_input.min(3)];
         let d1r = (d1x * d1x + d1y * d1y).sqrt();
         let d1t = d1y.atan2(d1x).to_degrees();
 
-        let d2x = (t * 1.3 + 1.0).sin() * 0.005;
-        let d2y = (t * 0.9 + 2.0).cos() * 0.005;
+        // Demod 2 reads from its selected channel
+        let (d2x, d2y, d2_phase_v) = ch_signals[dem2_input.min(3)];
         let d2r = (d2x * d2x + d2y * d2y).sqrt();
         let d2t = d2y.atan2(d2x).to_degrees();
 
-        let d1_phase = ((t * 0.3).sin() * 5.0).to_string();
+        let d1_phase = d1_phase_v.to_string();
         let d1x_s = d1x.to_string();
         let d1y_s = d1y.to_string();
         let d1r_s = d1r.to_string();
         let d1t_s = d1t.to_string();
-        let d2_phase = ((t * 0.2).cos() * 3.0).to_string();
+        let d2_phase = d2_phase_v.to_string();
         let d2x_s = d2x.to_string();
         let d2y_s = d2y.to_string();
         let d2r_s = d2r.to_string();
         let d2t_s = d2t.to_string();
 
+        // ADC level: signal amplitude * gain, normalized to [0, 1]
+        let d1_adc = (d1r * 2f64.powf(dem1_gain) * 100.0).min(1.0);
+        let d2_adc = (d2r * 2f64.powf(dem2_gain) * 100.0).min(1.0);
+        let d1_adc_s = d1_adc.to_string();
+        let d2_adc_s = d2_adc.to_string();
+
         let updates: Vec<(&str, &str)> = vec![
             ("dem1_phase", &d1_phase),
             ("dem1_x", &d1x_s), ("dem1_y", &d1y_s),
             ("dem1_r", &d1r_s), ("dem1_theta", &d1t_s),
+            ("dem1_adc_level", &d1_adc_s),
             ("dem2_phase", &d2_phase),
             ("dem2_x", &d2x_s), ("dem2_y", &d2y_s),
             ("dem2_r", &d2r_s), ("dem2_theta", &d2t_s),
+            ("dem2_adc_level", &d2_adc_s),
         ];
         if conn.set(&updates).is_err() {
             eprintln!("param_serv disconnected");

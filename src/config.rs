@@ -9,6 +9,8 @@ pub struct ParamDef {
     pub opts: Vec<String>,
     pub prec: Option<usize>,
     pub unit: Option<String>,
+    pub unit_conv: Vec<(String, i32)>,
+    pub step: Option<f64>,
 }
 
 pub struct Config {
@@ -54,6 +56,16 @@ fn parse(src: &str) -> LuaResult<Config> {
         let max: Option<f64> = t.get("max").ok();
         let prec: Option<usize> = t.get::<Option<u32>>("prec").ok().flatten().map(|n| n as usize);
         let unit: Option<String> = t.get("unit").ok();
+        let step: Option<f64> = t.get("step").ok();
+
+        let mut unit_conv = Vec::new();
+        if let Ok(tbl) = t.get::<LuaTable>("unit_conv") {
+            for pair in tbl.pairs::<String, i32>() {
+                let (k, v) = pair?;
+                unit_conv.push((k, v));
+            }
+            unit_conv.sort_by_key(|&(_, exp)| exp);
+        }
 
         let mut opts = Vec::new();
         if let Ok(tbl) = t.get::<LuaTable>("opts") {
@@ -62,7 +74,7 @@ fn parse(src: &str) -> LuaResult<Config> {
             }
         }
 
-        cfg.params.push(ParamDef { name, default, min, max, opts, prec, unit });
+        cfg.params.push(ParamDef { name, default, min, max, opts, prec, unit, unit_conv, step });
     }
 
     Ok(cfg)

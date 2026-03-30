@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 struct State {
     values: Vec<String>,
+    units: Vec<Option<String>>,
     versions: Vec<u64>,
     clock: u64,
     sse_event: Arc<String>,
@@ -24,6 +25,9 @@ impl State {
         let mut s = State {
             values: params.iter()
                 .map(|p| p.default.clone())
+                .collect(),
+            units: params.iter()
+                .map(|p| p.unit.clone())
                 .collect(),
             versions: vec![1; params.len()],
             clock: 1,
@@ -195,8 +199,9 @@ fn handle(
 
             // List parameters with metadata
             ("GET", "/params") => {
-                let body: String = params.iter()
-                    .map(|p| {
+                let s = state.lock().unwrap();
+                let body: String = params.iter().enumerate()
+                    .map(|(i, p)| {
                         let mut line = p.name.clone();
                         if !p.opts.is_empty() {
                             line.push_str("\topts:");
@@ -205,13 +210,30 @@ fn handle(
                         if let Some(prec) = p.prec {
                             line.push_str(&format!("\tprec:{}", prec));
                         }
-                        if let Some(ref u) = p.unit {
+                        if let Some(ref u) = s.units[i] {
                             line.push_str(&format!("\tunit:{}", u));
+                        }
+                        if !p.unit_conv.is_empty() {
+                            line.push_str("\tunit_conv:");
+                            let pairs: Vec<String> = p.unit_conv.iter()
+                                .map(|(name, exp)| format!("{}={}", name, exp))
+                                .collect();
+                            line.push_str(&pairs.join(","));
+                        }
+                        if let Some(min) = p.min {
+                            line.push_str(&format!("\tmin:{}", min));
+                        }
+                        if let Some(max) = p.max {
+                            line.push_str(&format!("\tmax:{}", max));
+                        }
+                        if let Some(step) = p.step {
+                            line.push_str(&format!("\tstep:{}", step));
                         }
                         line.push('\n');
                         line
                     })
                     .collect();
+                drop(s);
                 respond(&mut writer, 200, "OK", &[], body.as_bytes())
             }
 
@@ -257,6 +279,22 @@ fn handle(
                     s.sse_event = build_sse_event(&s, &params);
                 }
                 notify.notify_all();
+                respond(&mut writer, 200, "OK", &[], &[])
+            }
+
+            // Set display unit for a parameter
+            ("PUT", "/unit") => {
+                if let Ok(text) = std::str::from_utf8(&req.body) {
+                    let mut s = state.lock().unwrap();
+                    for line in text.lines() {
+                        if let Some((name, unit)) = line.split_once('\t')
+                            && let Some(i) = params.iter().position(|p| p.name == name)
+                            && (params[i].unit_conv.is_empty()
+                                || params[i].unit_conv.iter().any(|(u, _)| u == unit)) {
+                            s.units[i] = Some(unit.to_owned());
+                        }
+                    }
+                }
                 respond(&mut writer, 200, "OK", &[], &[])
             }
 

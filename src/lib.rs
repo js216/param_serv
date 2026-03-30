@@ -15,15 +15,22 @@ pub struct ParamInfo {
     pub opts: Vec<String>,
     pub prec: Option<usize>,
     pub unit: Option<String>,
+    pub unit_conv: Vec<(String, i32)>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
 }
 
 /// Parse a single `/params` response line into a `ParamInfo`.
-/// Format: `name[\topts:A,B,C][\tprec:N][\tunit:U]`
+/// Format: `name[\topts:A,B,C][\tprec:N][\tunit:U][\tunit_conv:Hz=0,kHz=3][\tmin:V][\tmax:V][\tstep:V]`
 pub fn parse_param_line(line: &str) -> Option<ParamInfo> {
     let mut fields = line.split('\t');
     let name = fields.next()?.to_owned();
     if name.is_empty() { return None; }
-    let mut info = ParamInfo { name, opts: Vec::new(), prec: None, unit: None };
+    let mut info = ParamInfo {
+        name, opts: Vec::new(), prec: None, unit: None,
+        unit_conv: Vec::new(), min: None, max: None, step: None,
+    };
     for field in fields {
         if let Some(v) = field.strip_prefix("opts:") {
             info.opts = v.split(',').map(str::to_owned).collect();
@@ -31,6 +38,20 @@ pub fn parse_param_line(line: &str) -> Option<ParamInfo> {
             info.prec = v.parse().ok();
         } else if let Some(v) = field.strip_prefix("unit:") {
             info.unit = Some(v.to_owned());
+        } else if let Some(v) = field.strip_prefix("unit_conv:") {
+            for pair in v.split(',') {
+                if let Some((name, exp)) = pair.split_once('=') {
+                    if let Ok(e) = exp.parse::<i32>() {
+                        info.unit_conv.push((name.to_owned(), e));
+                    }
+                }
+            }
+        } else if let Some(v) = field.strip_prefix("min:") {
+            info.min = v.parse().ok();
+        } else if let Some(v) = field.strip_prefix("max:") {
+            info.max = v.parse().ok();
+        } else if let Some(v) = field.strip_prefix("step:") {
+            info.step = v.parse().ok();
         }
     }
     Some(info)
@@ -77,6 +98,17 @@ impl Connection {
             .collect();
         self.send(&format!(
             "PUT /params HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        ))?;
+        self.recv()?;
+        Ok(())
+    }
+
+    /// Change the display unit for a parameter.
+    pub fn set_unit(&mut self, name: &str, unit: &str) -> io::Result<()> {
+        let body = format!("{}\t{}\n", name, unit);
+        self.send(&format!(
+            "PUT /unit HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
             body.len(), body
         ))?;
         self.recv()?;

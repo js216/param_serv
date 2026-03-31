@@ -114,6 +114,18 @@ fn main() {
     let mut dem2_auto_phase = AutoPhaseState::new();
     let mut dem1_phase: f64 = 0.0;
     let mut dem2_phase: f64 = 0.0;
+    // Auto-gain state: 0=Single, 1=Persistent, 2=Off
+    let mut dem1_auto_gain: usize = 2;
+    let mut dem2_auto_gain: usize = 2;
+    let mut dem1_gain_inc_time: f64 = 5.0;
+    let mut dem1_gain_dec_time: f64 = 1.0;
+    let mut dem2_gain_inc_time: f64 = 5.0;
+    let mut dem2_gain_dec_time: f64 = 1.0;
+    // Track how long signal has been too low/high for persistent auto-gain
+    let mut dem1_too_low_since: Option<f64> = None;
+    let mut dem1_too_high_since: Option<f64> = None;
+    let mut dem2_too_low_since: Option<f64> = None;
+    let mut dem2_too_high_since: Option<f64> = None;
 
     loop {
         t += 0.033;
@@ -134,6 +146,12 @@ fn main() {
                 "dem2_harmonic" => { if let Ok(h) = v.parse::<f64>() { dem2_harmonic = h; } }
                 "dem1_phase" => { if let Ok(p) = v.parse::<f64>() { dem1_phase = p; } }
                 "dem2_phase" => { if let Ok(p) = v.parse::<f64>() { dem2_phase = p; } }
+                "dem1_auto_gain" => { if let Ok(a) = v.parse::<usize>() { dem1_auto_gain = a; } }
+                "dem2_auto_gain" => { if let Ok(a) = v.parse::<usize>() { dem2_auto_gain = a; } }
+                "dem1_gain_inc_time" => { if let Ok(t) = v.parse::<f64>() { dem1_gain_inc_time = t; } }
+                "dem1_gain_dec_time" => { if let Ok(t) = v.parse::<f64>() { dem1_gain_dec_time = t; } }
+                "dem2_gain_inc_time" => { if let Ok(t) = v.parse::<f64>() { dem2_gain_inc_time = t; } }
+                "dem2_gain_dec_time" => { if let Ok(t) = v.parse::<f64>() { dem2_gain_dec_time = t; } }
                 "dem1_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem1_filter_cycles = c; } }
                 "dem2_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem2_filter_cycles = c; } }
                 "dem1_filter_display" => { if let Ok(d) = v.parse::<usize>() { dem1_filter_display = d.min(3); } }
@@ -352,6 +370,58 @@ fn main() {
         let d2_adc = (d2r * 2f64.powf(dem2_gain) / 9000.0).min(1.0);
         let d1_adc_s = d1_adc.to_string();
         let d2_adc_s = d2_adc.to_string();
+
+        // Auto-gain processing
+        // Target: ADC level ~0.5 (halfway). Too low: <0.15, too high: >0.85
+        let mut gain_sets: Vec<(&str, String)> = Vec::new();
+        for (adc, gain, auto_mode, inc_t, dec_t, too_low, too_high, gain_key, mode_key) in [
+            (d1_adc, &mut dem1_gain, &mut dem1_auto_gain, dem1_gain_inc_time, dem1_gain_dec_time,
+             &mut dem1_too_low_since, &mut dem1_too_high_since, "dem1_gain", "dem1_auto_gain"),
+            (d2_adc, &mut dem2_gain, &mut dem2_auto_gain, dem2_gain_inc_time, dem2_gain_dec_time,
+             &mut dem2_too_low_since, &mut dem2_too_high_since, "dem2_gain", "dem2_auto_gain"),
+        ] {
+            if *auto_mode == 0 {
+                // Single: pick best gain for ~0.5 ADC reading
+                // Current ADC = R * 2^gain / 9000, want ADC ≈ 0.5
+                // So ideal gain_exp = log2(0.5 * 9000 / R)
+                let r = adc * 9000.0 / 2f64.powf(*gain); // recover R
+                if r > 0.0 {
+                    let ideal = (0.5 * 9000.0 / r).log2();
+                    let new_gain = ideal.round().clamp(0.0, 8.0);
+                    *gain = new_gain;
+                    gain_sets.push((gain_key, format!("{}", new_gain as i32)));
+                }
+                *auto_mode = 2; // back to Off after single shot
+                gain_sets.push((mode_key, "2".to_owned()));
+            } else if *auto_mode == 1 {
+                // Persistent: adjust after timing thresholds
+                if adc < 0.15 {
+                    *too_high = None;
+                    if too_low.is_none() { *too_low = Some(t); }
+                    if t - too_low.unwrap() >= inc_t && *gain < 8.0 {
+                        *gain += 1.0;
+                        gain_sets.push((gain_key, format!("{}", *gain as i32)));
+                        *too_low = None;
+                    }
+                } else if adc > 0.85 {
+                    *too_low = None;
+                    if too_high.is_none() { *too_high = Some(t); }
+                    if t - too_high.unwrap() >= dec_t && *gain > 0.0 {
+                        *gain -= 1.0;
+                        gain_sets.push((gain_key, format!("{}", *gain as i32)));
+                        *too_high = None;
+                    }
+                } else {
+                    *too_low = None;
+                    *too_high = None;
+                }
+            }
+        }
+        if !gain_sets.is_empty() {
+            let refs: Vec<(&str, &str)> = gain_sets.iter()
+                .map(|(n, v)| (*n, v.as_str())).collect();
+            let _ = conn.set(&refs);
+        }
 
         // Auto-phase processing
         let mut auto_sets: Vec<(&str, String)> = Vec::new();

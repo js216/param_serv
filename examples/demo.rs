@@ -43,6 +43,19 @@ fn pseudo_random(seed: &mut u64) -> f64 {
     (*seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5  // range [-0.5, 0.5)
 }
 
+struct AutoPhaseState {
+    running: bool,
+    start_time: f64,
+    duration: f64,
+    target_phase: f64,
+}
+
+impl AutoPhaseState {
+    fn new() -> Self {
+        Self { running: false, start_time: 0.0, duration: 0.5, target_phase: 0.0 }
+    }
+}
+
 fn main() {
     let mut conn = loop {
         match param_serv::Connection::new() {
@@ -97,6 +110,10 @@ fn main() {
     let mut dem2_filter_display: usize = 0;
     // Track last values written by demo.rs to avoid feedback loops
     let mut last_written: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut dem1_auto_phase = AutoPhaseState::new();
+    let mut dem2_auto_phase = AutoPhaseState::new();
+    let mut dem1_phase: f64 = 0.0;
+    let mut dem2_phase: f64 = 0.0;
 
     loop {
         t += 0.033;
@@ -115,10 +132,36 @@ fn main() {
                 "dem2_input" => { if let Ok(i) = v.parse::<usize>() { dem2_input = i; } }
                 "dem1_harmonic" => { if let Ok(h) = v.parse::<f64>() { dem1_harmonic = h; } }
                 "dem2_harmonic" => { if let Ok(h) = v.parse::<f64>() { dem2_harmonic = h; } }
+                "dem1_phase" => { if let Ok(p) = v.parse::<f64>() { dem1_phase = p; } }
+                "dem2_phase" => { if let Ok(p) = v.parse::<f64>() { dem2_phase = p; } }
                 "dem1_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem1_filter_cycles = c; } }
                 "dem2_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem2_filter_cycles = c; } }
                 "dem1_filter_display" => { if let Ok(d) = v.parse::<usize>() { dem1_filter_display = d.min(3); } }
                 "dem2_filter_display" => { if let Ok(d) = v.parse::<usize>() { dem2_filter_display = d.min(3); } }
+                "dem1_auto_phase" => {
+                    if v == "start" && !dem1_auto_phase.running {
+                        let f_ref_hz = internal_freq * 1000.0;
+                        dem1_auto_phase.running = true;
+                        dem1_auto_phase.start_time = t;
+                        dem1_auto_phase.duration = if f_ref_hz >= 2.0 { 0.5 } else { 1.0 / f_ref_hz };
+                        let _ = conn.set(&[("dem1_auto_phase", "running")]);
+                    } else if v == "cancel" {
+                        dem1_auto_phase.running = false;
+                        let _ = conn.set(&[("dem1_auto_phase", "idle"), ("dem1_auto_phase_progress", "0")]);
+                    }
+                }
+                "dem2_auto_phase" => {
+                    if v == "start" && !dem2_auto_phase.running {
+                        let f_ref_hz = internal_freq * 1000.0;
+                        dem2_auto_phase.running = true;
+                        dem2_auto_phase.start_time = t;
+                        dem2_auto_phase.duration = if f_ref_hz >= 2.0 { 0.5 } else { 1.0 / f_ref_hz };
+                        let _ = conn.set(&[("dem2_auto_phase", "running")]);
+                    } else if v == "cancel" {
+                        dem2_auto_phase.running = false;
+                        let _ = conn.set(&[("dem2_auto_phase", "idle"), ("dem2_auto_phase_progress", "0")]);
+                    }
+                }
                 _ => {}
             }
         }
@@ -276,22 +319,28 @@ fn main() {
             ((t * 0.6 + 3.0).sin() * 180.0, (t * 1.4 + 1.0).cos() * 180.0, (t * 0.4).cos() * 7.0),
         ];
 
-        // Demod 1 reads from its selected channel
-        let (d1x, d1y, d1_phase_v) = ch_signals[dem1_input.min(3)];
+        // Demod 1 reads from its selected channel, rotated by user phase
+        let (d1x_raw, d1y_raw, _) = ch_signals[dem1_input.min(3)];
+        let d1_cos = dem1_phase.to_radians().cos();
+        let d1_sin = dem1_phase.to_radians().sin();
+        let d1x = d1x_raw * d1_cos + d1y_raw * d1_sin;
+        let d1y = -d1x_raw * d1_sin + d1y_raw * d1_cos;
         let d1r = (d1x * d1x + d1y * d1y).sqrt();
         let d1t = d1y.atan2(d1x).to_degrees();
 
-        // Demod 2 reads from its selected channel
-        let (d2x, d2y, d2_phase_v) = ch_signals[dem2_input.min(3)];
+        // Demod 2 reads from its selected channel, rotated by user phase
+        let (d2x_raw, d2y_raw, _) = ch_signals[dem2_input.min(3)];
+        let d2_cos = dem2_phase.to_radians().cos();
+        let d2_sin = dem2_phase.to_radians().sin();
+        let d2x = d2x_raw * d2_cos + d2y_raw * d2_sin;
+        let d2y = -d2x_raw * d2_sin + d2y_raw * d2_cos;
         let d2r = (d2x * d2x + d2y * d2y).sqrt();
         let d2t = d2y.atan2(d2x).to_degrees();
 
-        let d1_phase = d1_phase_v.to_string();
         let d1x_s = d1x.to_string();
         let d1y_s = d1y.to_string();
         let d1r_s = d1r.to_string();
         let d1t_s = d1t.to_string();
-        let d2_phase = d2_phase_v.to_string();
         let d2x_s = d2x.to_string();
         let d2y_s = d2y.to_string();
         let d2r_s = d2r.to_string();
@@ -304,12 +353,42 @@ fn main() {
         let d1_adc_s = d1_adc.to_string();
         let d2_adc_s = d2_adc.to_string();
 
+        // Auto-phase processing
+        let mut auto_sets: Vec<(&str, String)> = Vec::new();
+        // Compute target phase from raw (unrotated) signal: angle that zeros Y
+        if dem1_auto_phase.running {
+            dem1_auto_phase.target_phase = d1y_raw.atan2(d1x_raw).to_degrees();
+        }
+        if dem2_auto_phase.running {
+            dem2_auto_phase.target_phase = d2y_raw.atan2(d2x_raw).to_degrees();
+        }
+        for (ap, phase_val, phase_key, progress_key, state_key) in [
+            (&mut dem1_auto_phase, &mut dem1_phase, "dem1_phase", "dem1_auto_phase_progress", "dem1_auto_phase"),
+            (&mut dem2_auto_phase, &mut dem2_phase, "dem2_phase", "dem2_auto_phase_progress", "dem2_auto_phase"),
+        ] {
+            if ap.running {
+                let elapsed = t - ap.start_time;
+                let progress = (elapsed / ap.duration).min(1.0);
+                auto_sets.push((progress_key, format!("{}", progress)));
+                if progress >= 1.0 {
+                    ap.running = false;
+                    *phase_val = ap.target_phase;
+                    auto_sets.push((phase_key, format!("{}", ap.target_phase)));
+                    auto_sets.push((state_key, "idle".to_owned()));
+                    auto_sets.push((progress_key, "0".to_owned()));
+                }
+            }
+        }
+        if !auto_sets.is_empty() {
+            let refs: Vec<(&str, &str)> = auto_sets.iter()
+                .map(|(n, v)| (*n, v.as_str())).collect();
+            let _ = conn.set(&refs);
+        }
+
         let updates: Vec<(&str, &str)> = vec![
-            ("dem1_phase", &d1_phase),
             ("dem1_x", &d1x_s), ("dem1_y", &d1y_s),
             ("dem1_r", &d1r_s), ("dem1_theta", &d1t_s),
             ("dem1_adc_level", &d1_adc_s),
-            ("dem2_phase", &d2_phase),
             ("dem2_x", &d2x_s), ("dem2_y", &d2y_s),
             ("dem2_r", &d2r_s), ("dem2_theta", &d2t_s),
             ("dem2_adc_level", &d2_adc_s),

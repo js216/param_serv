@@ -91,6 +91,10 @@ fn main() {
     let mut dem2_harmonic: f64 = 1.0;
     let mut dem1_filter_cycles: f64 = 10000.0;
     let mut dem2_filter_cycles: f64 = 10000.0;
+    let mut dem1_filter_t_int: f64 = 10000.0 / 1_000_000.0; // cycles / det_freq
+    let mut dem2_filter_t_int: f64 = 10000.0 / 1_000_000.0;
+    let mut dem1_filter_display: usize = 0; // 0=cycles, 1=enbw, 2=tint, 3=bw3db
+    let mut dem2_filter_display: usize = 0;
     // Track last values written by demo.rs to avoid feedback loops
     let mut last_written: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
@@ -113,6 +117,8 @@ fn main() {
                 "dem2_harmonic" => { if let Ok(h) = v.parse::<f64>() { dem2_harmonic = h; } }
                 "dem1_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem1_filter_cycles = c; } }
                 "dem2_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem2_filter_cycles = c; } }
+                "dem1_filter_display" => { if let Ok(d) = v.parse::<usize>() { dem1_filter_display = d.min(3); } }
+                "dem2_filter_display" => { if let Ok(d) = v.parse::<usize>() { dem2_filter_display = d.min(3); } }
                 _ => {}
             }
         }
@@ -130,6 +136,8 @@ fn main() {
             struct DemodFilter {
                 harmonic: f64,
                 cycles: f64,
+                t_int: f64,
+                display: usize,
                 freq_dep_changed: bool,
                 cycles_key: &'static str,
                 enbw_key: &'static str,
@@ -139,12 +147,14 @@ fn main() {
             let mut demods = [
                 DemodFilter {
                     harmonic: dem1_harmonic, cycles: dem1_filter_cycles,
+                    t_int: dem1_filter_t_int, display: dem1_filter_display,
                     freq_dep_changed: freq_changed || dem1_harm_changed,
                     cycles_key: "dem1_filter_cycles", enbw_key: "dem1_filter_enbw",
                     tint_key: "dem1_filter_tint", bw3db_key: "dem1_filter_bw3db",
                 },
                 DemodFilter {
                     harmonic: dem2_harmonic, cycles: dem2_filter_cycles,
+                    t_int: dem2_filter_t_int, display: dem2_filter_display,
                     freq_dep_changed: freq_changed || dem2_harm_changed,
                     cycles_key: "dem2_filter_cycles", enbw_key: "dem2_filter_enbw",
                     tint_key: "dem2_filter_tint", bw3db_key: "dem2_filter_bw3db",
@@ -167,24 +177,46 @@ fn main() {
                 // skip: which param index to skip writing back (avoid overwriting user input)
                 let (t_int, skip) = if let Some(v) = user_changed(dm.cycles_key) {
                     if let Ok(nc) = v.parse::<f64>() {
+                        let ti = nc / det_freq;
                         dm.cycles = nc;
-                        (nc / det_freq, 0)
+                        dm.t_int = ti;
+                        (ti, 0)
                     } else { continue; }
                 } else if let Some(v) = user_changed(dm.tint_key) {
-                    if let Ok(ti) = v.parse::<f64>() { (ti, 2) } else { continue; }
+                    if let Ok(ti) = v.parse::<f64>() {
+                        dm.t_int = ti;
+                        dm.cycles = ti * det_freq;
+                        (ti, 2)
+                    } else { continue; }
                 } else if let Some(v) = user_changed(dm.enbw_key) {
                     if let Ok(enbw) = v.parse::<f64>() {
                         if enbw <= 0.0 { continue; }
-                        (1.0 / enbw, 1)
+                        let ti = 1.0 / enbw;
+                        dm.t_int = ti;
+                        dm.cycles = ti * det_freq;
+                        (ti, 1)
                     } else { continue; }
                 } else if let Some(v) = user_changed(dm.bw3db_key) {
                     if let Ok(bw) = v.parse::<f64>() {
                         if bw <= 0.0 { continue; }
-                        (SINC_BW3DB_FACTOR / bw, 3)
+                        let ti = SINC_BW3DB_FACTOR / bw;
+                        dm.t_int = ti;
+                        dm.cycles = ti * det_freq;
+                        (ti, 3)
                     } else { continue; }
                 } else if dm.freq_dep_changed || t < 0.05 {
-                    // Ref frequency or harmonic changed: recompute all from n_cycles
-                    (dm.cycles / det_freq, -1)
+                    // Ref frequency or harmonic changed: keep the active
+                    // parameter constant and recompute the rest.
+                    // display=0 (cycles): keep cycles, t_int changes
+                    // display=1,2,3: keep t_int, cycles changes
+                    if dm.display == 0 {
+                        let ti = dm.cycles / det_freq;
+                        dm.t_int = ti;
+                        (ti, -1)
+                    } else {
+                        dm.cycles = dm.t_int * det_freq;
+                        (dm.t_int, -1)
+                    }
                 } else {
                     continue;
                 };
@@ -195,6 +227,11 @@ fn main() {
                     t_int, det_freq, skip,
                 );
             }
+            // Write back updated state
+            dem1_filter_cycles = demods[0].cycles;
+            dem1_filter_t_int = demods[0].t_int;
+            dem2_filter_cycles = demods[1].cycles;
+            dem2_filter_t_int = demods[1].t_int;
             if !filter_sets.is_empty() {
                 for (n, v) in &filter_sets {
                     last_written.insert(n.to_string(), v.clone());

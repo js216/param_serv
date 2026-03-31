@@ -61,7 +61,7 @@ fn main() {
         let current = conn.get().unwrap_or_default();
         for (n, v) in &current {
             match n.as_str() {
-                "ref_source" => is_external = v == "1",
+                "ref_source" => is_external = v != "0",
                 "ref_frequency" if !is_external => {
                     if let Ok(f) = v.parse::<f64>() { internal_freq = f; }
                 }

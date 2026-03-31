@@ -91,6 +91,8 @@ fn main() {
     let mut dem2_harmonic: f64 = 1.0;
     let mut dem1_filter_cycles: f64 = 10000.0;
     let mut dem2_filter_cycles: f64 = 10000.0;
+    // Track last values written by demo.rs to avoid feedback loops
+    let mut last_written: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     loop {
         t += 0.033;
@@ -152,21 +154,30 @@ fn main() {
             for dm in &mut demods {
                 let det_freq = f_ref_hz * dm.harmonic;
                 if det_freq <= 0.0 { continue; }
-                // Check which param changed and derive integration time.
+                // Check which param changed BY THE USER (ignore our own writes).
+                let user_changed = |key: &str| -> Option<String> {
+                    current.iter().find(|(n, _)| n == key).and_then(|(_, v)| {
+                        if last_written.get(key).map(|lw| lw == v).unwrap_or(false) {
+                            None // this is our own write echoed back
+                        } else {
+                            Some(v.clone())
+                        }
+                    })
+                };
                 // skip: which param index to skip writing back (avoid overwriting user input)
-                let (t_int, skip) = if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.cycles_key) {
+                let (t_int, skip) = if let Some(v) = user_changed(dm.cycles_key) {
                     if let Ok(nc) = v.parse::<f64>() {
                         dm.cycles = nc;
                         (nc / det_freq, 0)
                     } else { continue; }
-                } else if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.tint_key) {
+                } else if let Some(v) = user_changed(dm.tint_key) {
                     if let Ok(ti) = v.parse::<f64>() { (ti, 2) } else { continue; }
-                } else if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.enbw_key) {
+                } else if let Some(v) = user_changed(dm.enbw_key) {
                     if let Ok(enbw) = v.parse::<f64>() {
                         if enbw <= 0.0 { continue; }
                         (1.0 / enbw, 1)
                     } else { continue; }
-                } else if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.bw3db_key) {
+                } else if let Some(v) = user_changed(dm.bw3db_key) {
                     if let Ok(bw) = v.parse::<f64>() {
                         if bw <= 0.0 { continue; }
                         (SINC_BW3DB_FACTOR / bw, 3)
@@ -185,6 +196,9 @@ fn main() {
                 );
             }
             if !filter_sets.is_empty() {
+                for (n, v) in &filter_sets {
+                    last_written.insert(n.to_string(), v.clone());
+                }
                 let refs: Vec<(&str, &str)> = filter_sets.iter()
                     .map(|(n, v)| (*n, v.as_str())).collect();
                 let _ = conn.set(&refs);

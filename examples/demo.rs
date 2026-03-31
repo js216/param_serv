@@ -41,7 +41,7 @@ fn main() {
         ("dem2_upper_qty", "0"), ("dem2_lower_qty", "1"),
         ("led_status_com", "0"), ("led_status_err", "0"),
         ("led_status_ovld", "0"), ("led_status_trip", "0"),
-        ("status", "Ready."),
+        ("status", ""),
     ];
     let _ = conn.set(&init);
 

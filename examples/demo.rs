@@ -6,6 +6,38 @@
 
 use std::time::Duration;
 
+/// BW_3dB factor for a synchronous FIR (rectangular window / sinc response).
+/// The −3 dB point of sinc(π f T) is at f ≈ 0.886 / T.
+const SINC_BW3DB_FACTOR: f64 = 0.886;
+
+/// Given integration time (seconds) and detection frequency (Hz),
+/// compute all four filter representations and push updates.
+/// Synchronous FIR (rectangular window over N reference cycles):
+///   T_int = n_cycles / f_det
+///   ENBW  = 1 / T_int  (= f_det / n_cycles)
+///   BW_3dB ≈ 0.886 / T_int
+/// Push filter updates, skipping the parameter that triggered the recomputation
+/// to avoid overwriting the user's keypad entry.
+/// `skip`: 0=cycles, 1=enbw, 2=tint, 3=bw3db, -1=skip none (freq/harmonic change)
+fn push_filter_updates(
+    updates: &mut Vec<(&'static str, String)>,
+    prefix_cycles: &'static str,
+    prefix_enbw: &'static str,
+    prefix_tint: &'static str,
+    prefix_bw3db: &'static str,
+    t_int: f64,
+    f_det: f64,
+    skip: i32,
+) {
+    let n_cycles = t_int * f_det;
+    let enbw = 1.0 / t_int;
+    let bw3db = SINC_BW3DB_FACTOR / t_int;
+    if skip != 0 { updates.push((prefix_cycles, format!("{}", n_cycles.round() as i64))); }
+    if skip != 1 { updates.push((prefix_enbw, format!("{}", enbw))); }
+    if skip != 2 { updates.push((prefix_tint, format!("{}", t_int))); }
+    if skip != 3 { updates.push((prefix_bw3db, format!("{}", bw3db))); }
+}
+
 fn pseudo_random(seed: &mut u64) -> f64 {
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     (*seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5  // range [-0.5, 0.5)
@@ -32,12 +64,14 @@ fn main() {
         ("dem1_input", "0"),
         ("dem1_input_mode", "0"), ("dem1_coupling", "0"),
         ("dem1_harmonic", "1"), ("dem1_gain", "0"),
-        ("dem1_time_constant", "1 \u{00B5}s"), ("dem1_filter_slope", "3"),
+        ("dem1_time_constant", "1 \u{00B5}s"),
+        ("dem1_filter_display", "0"), ("dem1_filter_cycles", "10000"),
         ("dem1_upper_qty", "0"), ("dem1_lower_qty", "1"),
         ("dem2_input", "1"),
         ("dem2_input_mode", "0"), ("dem2_coupling", "0"),
         ("dem2_harmonic", "1"), ("dem2_gain", "0"),
-        ("dem2_time_constant", "1 \u{00B5}s"), ("dem2_filter_slope", "3"),
+        ("dem2_time_constant", "1 \u{00B5}s"),
+        ("dem2_filter_display", "0"), ("dem2_filter_cycles", "10000"),
         ("dem2_upper_qty", "0"), ("dem2_lower_qty", "1"),
         ("led_status_com", "0"), ("led_status_err", "0"),
         ("led_status_ovld", "0"), ("led_status_trip", "0"),
@@ -53,6 +87,10 @@ fn main() {
     let mut dem2_gain: f64 = 0.0;
     let mut dem1_input: usize = 0;
     let mut dem2_input: usize = 1;
+    let mut dem1_harmonic: f64 = 1.0;
+    let mut dem2_harmonic: f64 = 1.0;
+    let mut dem1_filter_cycles: f64 = 10000.0;
+    let mut dem2_filter_cycles: f64 = 10000.0;
 
     loop {
         t += 0.033;
@@ -69,7 +107,87 @@ fn main() {
                 "dem2_gain" => { if let Ok(g) = v.parse::<f64>() { dem2_gain = g; } }
                 "dem1_input" => { if let Ok(i) = v.parse::<usize>() { dem1_input = i; } }
                 "dem2_input" => { if let Ok(i) = v.parse::<usize>() { dem2_input = i; } }
+                "dem1_harmonic" => { if let Ok(h) = v.parse::<f64>() { dem1_harmonic = h; } }
+                "dem2_harmonic" => { if let Ok(h) = v.parse::<f64>() { dem2_harmonic = h; } }
+                "dem1_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem1_filter_cycles = c; } }
+                "dem2_filter_cycles" => { if let Ok(c) = v.parse::<f64>() { dem2_filter_cycles = c; } }
                 _ => {}
+            }
+        }
+
+        // Filter parameter conversions: when one changes, recompute the others.
+        // Each demod has filter_cycles, filter_enbw, filter_tint, filter_bw3db.
+        // All represent the same underlying integration time.
+        // Also recompute when ref_frequency or harmonic changes (n_cycles stays
+        // fixed but T_int/ENBW/BW_3dB change with the detection frequency).
+        {
+            let f_ref_hz = internal_freq * 1000.0; // ref_frequency is in kHz
+            let freq_changed = current.iter().any(|(n, _)| n == "ref_frequency");
+            let dem1_harm_changed = current.iter().any(|(n, _)| n == "dem1_harmonic");
+            let dem2_harm_changed = current.iter().any(|(n, _)| n == "dem2_harmonic");
+            struct DemodFilter {
+                harmonic: f64,
+                cycles: f64,
+                freq_dep_changed: bool,
+                cycles_key: &'static str,
+                enbw_key: &'static str,
+                tint_key: &'static str,
+                bw3db_key: &'static str,
+            }
+            let mut demods = [
+                DemodFilter {
+                    harmonic: dem1_harmonic, cycles: dem1_filter_cycles,
+                    freq_dep_changed: freq_changed || dem1_harm_changed,
+                    cycles_key: "dem1_filter_cycles", enbw_key: "dem1_filter_enbw",
+                    tint_key: "dem1_filter_tint", bw3db_key: "dem1_filter_bw3db",
+                },
+                DemodFilter {
+                    harmonic: dem2_harmonic, cycles: dem2_filter_cycles,
+                    freq_dep_changed: freq_changed || dem2_harm_changed,
+                    cycles_key: "dem2_filter_cycles", enbw_key: "dem2_filter_enbw",
+                    tint_key: "dem2_filter_tint", bw3db_key: "dem2_filter_bw3db",
+                },
+            ];
+            let mut filter_sets: Vec<(&str, String)> = Vec::new();
+            for dm in &mut demods {
+                let det_freq = f_ref_hz * dm.harmonic;
+                if det_freq <= 0.0 { continue; }
+                // Check which param changed and derive integration time.
+                // skip: which param index to skip writing back (avoid overwriting user input)
+                let (t_int, skip) = if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.cycles_key) {
+                    if let Ok(nc) = v.parse::<f64>() {
+                        dm.cycles = nc;
+                        (nc / det_freq, 0)
+                    } else { continue; }
+                } else if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.tint_key) {
+                    if let Ok(ti) = v.parse::<f64>() { (ti, 2) } else { continue; }
+                } else if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.enbw_key) {
+                    if let Ok(enbw) = v.parse::<f64>() {
+                        if enbw <= 0.0 { continue; }
+                        (1.0 / enbw, 1)
+                    } else { continue; }
+                } else if let Some((_, v)) = current.iter().find(|(n, _)| n == dm.bw3db_key) {
+                    if let Ok(bw) = v.parse::<f64>() {
+                        if bw <= 0.0 { continue; }
+                        (SINC_BW3DB_FACTOR / bw, 3)
+                    } else { continue; }
+                } else if dm.freq_dep_changed || t < 0.05 {
+                    // Ref frequency or harmonic changed: recompute all from n_cycles
+                    (dm.cycles / det_freq, -1)
+                } else {
+                    continue;
+                };
+                if t_int <= 0.0 { continue; }
+                push_filter_updates(
+                    &mut filter_sets,
+                    dm.cycles_key, dm.enbw_key, dm.tint_key, dm.bw3db_key,
+                    t_int, det_freq, skip,
+                );
+            }
+            if !filter_sets.is_empty() {
+                let refs: Vec<(&str, &str)> = filter_sets.iter()
+                    .map(|(n, v)| (*n, v.as_str())).collect();
+                let _ = conn.set(&refs);
             }
         }
 

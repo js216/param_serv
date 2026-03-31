@@ -80,12 +80,12 @@ fn main() {
             let _ = conn.set(&[("ref_frequency", &freq_s)]);
         }
 
-        // Simulate per-channel signals (different waveforms per channel)
+        // Simulate per-channel signals in µV (200-300 µV range for R)
         let ch_signals: [(f64, f64, f64); 4] = [
-            ((t).sin() * 0.001,       (t * 0.7).cos() * 0.001,       (t * 0.3).sin() * 5.0),
-            ((t * 1.3 + 1.0).sin() * 0.0005, (t * 0.9 + 2.0).cos() * 0.0005, (t * 0.2).cos() * 3.0),
-            ((t * 0.8).sin() * 0.002, (t * 1.1).cos() * 0.002,       (t * 0.5).sin() * 10.0),
-            ((t * 0.6 + 3.0).sin() * 0.0008, (t * 1.4 + 1.0).cos() * 0.0008, (t * 0.4).cos() * 7.0),
+            ((t).sin() * 200.0,            (t * 0.7).cos() * 200.0,       (t * 0.3).sin() * 5.0),
+            ((t * 1.3 + 1.0).sin() * 150.0, (t * 0.9 + 2.0).cos() * 150.0, (t * 0.2).cos() * 3.0),
+            ((t * 0.8).sin() * 250.0,      (t * 1.1).cos() * 250.0,       (t * 0.5).sin() * 10.0),
+            ((t * 0.6 + 3.0).sin() * 180.0, (t * 1.4 + 1.0).cos() * 180.0, (t * 0.4).cos() * 7.0),
         ];
 
         // Demod 1 reads from its selected channel
@@ -109,9 +109,10 @@ fn main() {
         let d2r_s = d2r.to_string();
         let d2t_s = d2t.to_string();
 
-        // ADC level: signal amplitude * gain, normalized to [0, 1]
-        let d1_adc = (d1r * 2f64.powf(dem1_gain) * 100.0).min(1.0);
-        let d2_adc = (d2r * 2f64.powf(dem2_gain) * 100.0).min(1.0);
+        // ADC level: signal amplitude (µV) * gain / full_scale (1V = 1e6 µV)
+        // ADC full scale ~9000 µV: gain=4 (16x) with R≈280 µV → ~0.5
+        let d1_adc = (d1r * 2f64.powf(dem1_gain) / 9000.0).min(1.0);
+        let d2_adc = (d2r * 2f64.powf(dem2_gain) / 9000.0).min(1.0);
         let d1_adc_s = d1_adc.to_string();
         let d2_adc_s = d2_adc.to_string();
 

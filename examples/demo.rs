@@ -164,46 +164,58 @@ fn main() {
             for dm in &mut demods {
                 let det_freq = f_ref_hz * dm.harmonic;
                 if det_freq <= 0.0 { continue; }
-                // Check which param changed BY THE USER (ignore our own writes).
-                let user_changed = |key: &str| -> Option<String> {
-                    current.iter().find(|(n, _)| n == key).and_then(|(_, v)| {
-                        if last_written.get(key).map(|lw| lw == v).unwrap_or(false) {
-                            None // this is our own write echoed back
-                        } else {
-                            Some(v.clone())
-                        }
-                    })
+                // The keypad only targets the displayed param, so only check
+                // that one for user edits.  Checking all four in a priority
+                // chain caused false positives: stale SSE echoes for a
+                // non-displayed param would misfire first and overwrite the
+                // param the user was actually editing.
+                let (active_key, skip_idx) = match dm.display {
+                    0 => (dm.cycles_key, 0i32),
+                    1 => (dm.enbw_key, 1),
+                    2 => (dm.tint_key, 2),
+                    _ => (dm.bw3db_key, 3),
                 };
-                // skip: which param index to skip writing back (avoid overwriting user input)
-                let (t_int, skip) = if let Some(v) = user_changed(dm.cycles_key) {
-                    if let Ok(nc) = v.parse::<f64>() {
-                        let ti = nc / det_freq;
-                        dm.cycles = nc;
-                        dm.t_int = ti;
-                        (ti, 0)
-                    } else { continue; }
-                } else if let Some(v) = user_changed(dm.tint_key) {
-                    if let Ok(ti) = v.parse::<f64>() {
-                        dm.t_int = ti;
-                        dm.cycles = ti * det_freq;
-                        (ti, 2)
-                    } else { continue; }
-                } else if let Some(v) = user_changed(dm.enbw_key) {
-                    if let Ok(enbw) = v.parse::<f64>() {
-                        if enbw <= 0.0 { continue; }
-                        let ti = 1.0 / enbw;
-                        dm.t_int = ti;
-                        dm.cycles = ti * det_freq;
-                        (ti, 1)
-                    } else { continue; }
-                } else if let Some(v) = user_changed(dm.bw3db_key) {
-                    if let Ok(bw) = v.parse::<f64>() {
-                        if bw <= 0.0 { continue; }
-                        let ti = SINC_BW3DB_FACTOR / bw;
-                        dm.t_int = ti;
-                        dm.cycles = ti * det_freq;
-                        (ti, 3)
-                    } else { continue; }
+                let latest = current.iter().rev()
+                    .find(|(n, _)| n.as_str() == active_key)
+                    .map(|(_, v)| v.clone());
+                let user_edit = latest.as_ref().and_then(|v| {
+                    if last_written.get(active_key).map(|lw| lw == v).unwrap_or(false) {
+                        None
+                    } else {
+                        Some(v.clone())
+                    }
+                });
+                let (t_int, skip) = if let Some(v) = user_edit {
+                    match skip_idx {
+                        0 => {
+                            if let Ok(nc) = v.parse::<f64>() {
+                                dm.cycles = nc; dm.t_int = nc / det_freq;
+                                (dm.t_int, 0)
+                            } else { continue; }
+                        }
+                        1 => {
+                            if let Ok(enbw) = v.parse::<f64>() {
+                                if enbw <= 0.0 { continue; }
+                                let ti = 1.0 / enbw;
+                                dm.t_int = ti; dm.cycles = ti * det_freq;
+                                (ti, 1)
+                            } else { continue; }
+                        }
+                        2 => {
+                            if let Ok(ti) = v.parse::<f64>() {
+                                dm.t_int = ti; dm.cycles = ti * det_freq;
+                                (ti, 2)
+                            } else { continue; }
+                        }
+                        _ => {
+                            if let Ok(bw) = v.parse::<f64>() {
+                                if bw <= 0.0 { continue; }
+                                let ti = SINC_BW3DB_FACTOR / bw;
+                                dm.t_int = ti; dm.cycles = ti * det_freq;
+                                (ti, 3)
+                            } else { continue; }
+                        }
+                    }
                 } else if dm.freq_dep_changed || t < 0.05 {
                     // Ref frequency or harmonic changed: keep the active
                     // parameter constant and recompute the rest.
@@ -226,6 +238,13 @@ fn main() {
                     dm.cycles_key, dm.enbw_key, dm.tint_key, dm.bw3db_key,
                     t_int, det_freq, skip,
                 );
+                // Record the user's raw value for the skipped param so echo
+                // detection won't keep re-triggering on subsequent ticks.
+                if skip >= 0 {
+                    if let Some(v) = latest {
+                        last_written.insert(active_key.to_string(), v);
+                    }
+                }
             }
             // Write back updated state
             dem1_filter_cycles = demods[0].cycles;

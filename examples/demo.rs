@@ -161,7 +161,7 @@ fn main() {
                         let f_ref_hz = internal_freq * 1000.0;
                         dem1_auto_phase.running = true;
                         dem1_auto_phase.start_time = t;
-                        dem1_auto_phase.duration = if f_ref_hz >= 2.0 { 0.5 } else { 1.0 / f_ref_hz };
+                        dem1_auto_phase.duration = if f_ref_hz >= 2.0 { 2.0 } else { 1.0 / f_ref_hz };
                         let _ = conn.set(&[("dem1_auto_phase", "running")]);
                     } else if v == "cancel" {
                         dem1_auto_phase.running = false;
@@ -173,7 +173,7 @@ fn main() {
                         let f_ref_hz = internal_freq * 1000.0;
                         dem2_auto_phase.running = true;
                         dem2_auto_phase.start_time = t;
-                        dem2_auto_phase.duration = if f_ref_hz >= 2.0 { 0.5 } else { 1.0 / f_ref_hz };
+                        dem2_auto_phase.duration = if f_ref_hz >= 2.0 { 2.0 } else { 1.0 / f_ref_hz };
                         let _ = conn.set(&[("dem2_auto_phase", "running")]);
                     } else if v == "cancel" {
                         dem2_auto_phase.running = false;

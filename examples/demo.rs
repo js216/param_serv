@@ -455,6 +455,24 @@ fn main() {
             let _ = conn.set(&refs);
         }
 
+        // Annunciator demo: cycle through each one, 1 second each
+        {
+            const ANN_PARAMS: &[&str] = &[
+                "dem1_ch1_overload", "dem1_ch1_trip",
+                "dem1_ch3_overload", "dem1_ch3_trip",
+                "ext_10mhz", "error",
+                "dem2_ch2_overload", "dem2_ch2_trip",
+                "dem2_ch4_overload", "dem2_ch4_trip",
+            ];
+            let active_idx = (t as usize) % ANN_PARAMS.len();
+            let ann_sets: Vec<(&str, String)> = ANN_PARAMS.iter().enumerate()
+                .map(|(i, &name)| (name, if i == active_idx { "1".to_owned() } else { "0".to_owned() }))
+                .collect();
+            let refs: Vec<(&str, &str)> = ann_sets.iter()
+                .map(|(n, v)| (*n, v.as_str())).collect();
+            let _ = conn.set(&refs);
+        }
+
         let updates: Vec<(&str, &str)> = vec![
             ("dem1_x", &d1x_s), ("dem1_y", &d1y_s),
             ("dem1_r", &d1r_s), ("dem1_theta", &d1t_s),

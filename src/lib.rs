@@ -235,6 +235,9 @@ pub use native::Connection;
 #[cfg(not(target_os = "emscripten"))]
 pub fn poll_key() -> Option<String> { None }
 
+#[cfg(not(target_os = "emscripten"))]
+pub fn set_led(_name: &str, _on: bool) {}
+
 
 // ---- Emscripten Connection (XHR via JS bridge) -----------------------------
 
@@ -251,6 +254,7 @@ mod web {
         ) -> usize;
         fn gui_poll_key(out: *mut u8, out_len: usize) -> usize;
         fn gui_get_server_url(out: *mut u8, out_len: usize) -> usize;
+        fn gui_set_led(name: *const u8, value: u32);
         fn gui_sse_start(url: *const u8);
         fn gui_sse_drain(out: *mut u8, out_len: usize) -> usize;
     }
@@ -337,6 +341,11 @@ mod web {
         if n == 0 { return None; }
         Some(String::from_utf8_lossy(&buf[..n]).into_owned())
     }
+
+    pub fn set_led(name: &str, on: bool) {
+        let cname = std::ffi::CString::new(name).unwrap();
+        unsafe { gui_set_led(cname.as_ptr() as *const u8, on as u32); }
+    }
 }
 
 #[cfg(target_os = "emscripten")]
@@ -344,3 +353,6 @@ pub use web::Connection;
 
 #[cfg(target_os = "emscripten")]
 pub use web::poll_key;
+
+#[cfg(target_os = "emscripten")]
+pub use web::set_led;

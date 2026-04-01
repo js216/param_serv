@@ -236,10 +236,13 @@ fn handle(
                     let mut s = state.lock().unwrap();
                     s.clock += 1;
                     for line in text.lines() {
-                        if let Some((name, val)) = line.split_once('\t')
-                            && let Some(i) = params.iter().position(|p| p.name == name) {
-                            s.values[i] = intern_value(val, &params[i]);
-                            s.versions[i] = s.clock;
+                        if let Some((name, val)) = line.split_once('\t') {
+                            if let Some(i) = params.iter().position(|p| p.name == name) {
+                                s.values[i] = intern_value(val, &params[i]);
+                                s.versions[i] = s.clock;
+                            } else {
+                                eprintln!("warning: PUT unknown param {:?}", name);
+                            }
                         }
                     }
                     s.sse_event = build_sse_event(&s, &params);

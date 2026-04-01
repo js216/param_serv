@@ -93,6 +93,8 @@ fn main() {
         ("dem2_time_constant", "1 \u{00B5}s"),
         ("dem2_filter_display", "0"), ("dem2_filter_cycles", "10000"),
         ("dem2_upper_qty", "0"), ("dem2_lower_qty", "1"),
+        ("serial_number", "SN0001"),
+        ("firmware_version", "1.0"),
         ("led_status_com", "0"), ("led_status_err", "0"),
         ("led_status_ovld", "0"), ("led_status_trip", "0"),
         ("status", ""),
@@ -521,6 +523,11 @@ fn main() {
             let _ = conn.set(&refs);
         }
 
+        // Uptime and ext 10 MHz amplitude
+        let secs = t as u64;
+        let uptime_s = format!("{:02}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60);
+        let ext_ampl_s = format!("{:.1}", ext_10mhz_ampl);
+
         let updates: Vec<(&str, &str)> = vec![
             ("dem1_x", &d1x_s), ("dem1_y", &d1y_s),
             ("dem1_r", &d1r_s), ("dem1_theta", &d1t_s),
@@ -528,6 +535,8 @@ fn main() {
             ("dem2_x", &d2x_s), ("dem2_y", &d2y_s),
             ("dem2_r", &d2r_s), ("dem2_theta", &d2t_s),
             ("dem2_adc_level", &d2_adc_s),
+            ("uptime", &uptime_s),
+            ("ext_10mhz_amplitude", &ext_ampl_s),
         ];
         if conn.set(&updates).is_err() {
             eprintln!("param_serv disconnected");

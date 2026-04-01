@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Stanford Research Systems, Inc.
 
 use param_serv::config::ParamDef as Param;
-use param_serv::TCP_ADDR;
+use param_serv::tcp_addr;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};
@@ -306,8 +306,9 @@ fn main() {
     let state = Arc::new(Mutex::new(State::new(&params)));
     let notify = Arc::new(Condvar::new());
 
-    let listener = TcpListener::bind(TCP_ADDR).expect("TCP bind");
-    eprintln!("param_serv listening on {}", TCP_ADDR);
+    let addr = tcp_addr();
+    let listener = TcpListener::bind(&addr).expect("TCP bind");
+    eprintln!("param_serv listening on {}", addr);
 
     for stream in listener.incoming().flatten() {
         let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();

@@ -4,7 +4,14 @@
 
 pub mod config;
 
-pub const TCP_ADDR: &str = "127.0.0.1:7777";
+pub const TCP_ADDR_DEFAULT: &str = "127.0.0.1:7777";
+
+pub fn tcp_addr() -> String {
+    match std::env::var("PARAM_SERV_PORT") {
+        Ok(port) => format!("127.0.0.1:{}", port),
+        Err(_) => TCP_ADDR_DEFAULT.to_string(),
+    }
+}
 
 /// Param metadata returned by `Connection::list()`.
 pub struct ParamInfo {
@@ -114,12 +121,13 @@ mod native {
     impl Connection {
         pub fn new() -> io::Result<Self> {
             // Request connection (for set, list, set_unit, refresh)
-            let req = TcpStream::connect(TCP_ADDR)?;
+            let addr = tcp_addr();
+            let req = TcpStream::connect(&addr)?;
             let req_w = req.try_clone()?;
             let req_r = BufReader::new(req);
 
             // SSE connection (background thread reads pushed events)
-            let mut sse = TcpStream::connect(TCP_ADDR)?;
+            let mut sse = TcpStream::connect(&addr)?;
             sse.write_all(b"GET /events HTTP/1.1\r\n\r\n")?;
 
             let buffer: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));

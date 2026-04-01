@@ -6,6 +6,11 @@
 
 use std::time::Duration;
 
+#[cfg(target_os = "emscripten")]
+unsafe extern "C" {
+    fn emscripten_sleep(ms: u32);
+}
+
 /// BW_3dB factor for a synchronous FIR (rectangular window / sinc response).
 /// The −3 dB point of sinc(π f T) is at f ≈ 0.886 / T.
 const SINC_BW3DB_FACTOR: f64 = 0.886;
@@ -77,12 +82,14 @@ fn main() {
         ("dem1_input", "0"),
         ("dem1_input_mode", "0"), ("dem1_coupling", "0"),
         ("dem1_harmonic", "1"), ("dem1_gain", "0"),
+        ("dem1_phase", "0"),
         ("dem1_time_constant", "1 \u{00B5}s"),
         ("dem1_filter_display", "0"), ("dem1_filter_cycles", "10000"),
         ("dem1_upper_qty", "0"), ("dem1_lower_qty", "1"),
         ("dem2_input", "1"),
         ("dem2_input_mode", "0"), ("dem2_coupling", "0"),
         ("dem2_harmonic", "1"), ("dem2_gain", "0"),
+        ("dem2_phase", "0"),
         ("dem2_time_constant", "1 \u{00B5}s"),
         ("dem2_filter_display", "0"), ("dem2_filter_cycles", "10000"),
         ("dem2_upper_qty", "0"), ("dem2_lower_qty", "1"),
@@ -126,6 +133,14 @@ fn main() {
     let mut dem1_too_high_since: Option<f64> = None;
     let mut dem2_too_low_since: Option<f64> = None;
     let mut dem2_too_high_since: Option<f64> = None;
+    // Per-channel signal config (settable via demo_ch*_* params from browser UI)
+    let mut ch_x_ampl = [200.0f64, 150.0, 250.0, 180.0];
+    let mut ch_y_ampl = [200.0f64, 150.0, 250.0, 180.0];
+    let mut ch_waveform = [0usize; 4]; // 0=sine, 1=noisy, 2=noise
+    let mut ch_frequency = [1.0f64, 1.3, 0.8, 0.6];
+    let mut ch_trip = [false; 4];
+    // Global instrument config
+    let mut ext_10mhz_ampl: f64 = 0.0;
 
     loop {
         t += 0.033;
@@ -178,6 +193,22 @@ fn main() {
                     } else if v == "cancel" {
                         dem2_auto_phase.running = false;
                         let _ = conn.set(&[("dem2_auto_phase", "idle"), ("dem2_auto_phase_progress", "0")]);
+                    }
+                }
+                "demo_ext_10mhz_amplitude" => {
+                    if let Ok(a) = v.parse::<f64>() { ext_10mhz_ampl = a; }
+                }
+                _ if n.starts_with("demo_ch") && n.len() > 9 => {
+                    let idx = (n.as_bytes()[7] - b'1') as usize;
+                    if idx < 4 {
+                        match &n[9..] {
+                            "x_ampl"    => { if let Ok(a) = v.parse::<f64>() { ch_x_ampl[idx] = a; } }
+                            "y_ampl"    => { if let Ok(a) = v.parse::<f64>() { ch_y_ampl[idx] = a; } }
+                            "waveform"  => { if let Ok(w) = v.parse::<usize>() { ch_waveform[idx] = w; } }
+                            "frequency" => { if let Ok(f) = v.parse::<f64>() { ch_frequency[idx] = f; } }
+                            "trip"      => ch_trip[idx] = v != "0",
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}
@@ -329,16 +360,30 @@ fn main() {
             let _ = conn.set(&[("ref_frequency", &freq_s)]);
         }
 
-        // Simulate per-channel signals in µV (200-300 µV range for R)
-        let ch_signals: [(f64, f64, f64); 4] = [
-            ((t).sin() * 200.0,            (t * 0.7).cos() * 200.0,       (t * 0.3).sin() * 5.0),
-            ((t * 1.3 + 1.0).sin() * 150.0, (t * 0.9 + 2.0).cos() * 150.0, (t * 0.2).cos() * 3.0),
-            ((t * 0.8).sin() * 250.0,      (t * 1.1).cos() * 250.0,       (t * 0.5).sin() * 10.0),
-            ((t * 0.6 + 3.0).sin() * 180.0, (t * 1.4 + 1.0).cos() * 180.0, (t * 0.4).cos() * 7.0),
-        ];
+        // Simulate per-channel signals in µV (configurable via demo_ch*_* params)
+        let mut ch_signals = [(0.0, 0.0); 4];
+        for i in 0..4 {
+            let xa = ch_x_ampl[i];
+            let ya = ch_y_ampl[i];
+            let freq = ch_frequency[i];
+            ch_signals[i] = match ch_waveform[i] {
+                1 => ( // noisy sine
+                    (t * freq).sin() * xa + xa * pseudo_random(&mut rng_seed) * 0.2,
+                    (t * freq * 0.7).cos() * ya + ya * pseudo_random(&mut rng_seed) * 0.2,
+                ),
+                2 => ( // white noise
+                    xa * pseudo_random(&mut rng_seed) * 2.0,
+                    ya * pseudo_random(&mut rng_seed) * 2.0,
+                ),
+                _ => ( // clean sine (default)
+                    (t * freq).sin() * xa,
+                    (t * freq * 0.7).cos() * ya,
+                ),
+            };
+        }
 
         // Demod 1 reads from its selected channel, rotated by user phase
-        let (d1x_raw, d1y_raw, _) = ch_signals[dem1_input.min(3)];
+        let (d1x_raw, d1y_raw) = ch_signals[dem1_input.min(3)];
         let d1_cos = dem1_phase.to_radians().cos();
         let d1_sin = dem1_phase.to_radians().sin();
         let d1x = d1x_raw * d1_cos + d1y_raw * d1_sin;
@@ -347,7 +392,7 @@ fn main() {
         let d1t = d1y.atan2(d1x).to_degrees();
 
         // Demod 2 reads from its selected channel, rotated by user phase
-        let (d2x_raw, d2y_raw, _) = ch_signals[dem2_input.min(3)];
+        let (d2x_raw, d2y_raw) = ch_signals[dem2_input.min(3)];
         let d2_cos = dem2_phase.to_radians().cos();
         let d2_sin = dem2_phase.to_radians().sin();
         let d2x = d2x_raw * d2_cos + d2y_raw * d2_sin;
@@ -455,19 +500,22 @@ fn main() {
             let _ = conn.set(&refs);
         }
 
-        // Annunciator demo: cycle through each one, 1 second each
+        // Annunciators: driven by channel/instrument config panels
         {
-            const ANN_PARAMS: &[&str] = &[
-                "dem1_ch1_overload", "dem1_ch1_trip",
-                "dem1_ch3_overload", "dem1_ch3_trip",
-                "ext_10mhz", "error",
-                "dem2_ch2_overload", "dem2_ch2_trip",
-                "dem2_ch4_overload", "dem2_ch4_trip",
+            const TRIP: &[&str] = &[
+                "dem1_ch1_trip", "dem2_ch2_trip", "dem1_ch3_trip", "dem2_ch4_trip",
             ];
-            let active_idx = (t as usize) % ANN_PARAMS.len();
-            let ann_sets: Vec<(&str, String)> = ANN_PARAMS.iter().enumerate()
-                .map(|(i, &name)| (name, if i == active_idx { "1".to_owned() } else { "0".to_owned() }))
-                .collect();
+            let ext_active = ext_10mhz_ampl > 0.5;
+            let mut ann_sets: Vec<(&str, String)> = Vec::new();
+            for (i, &tp) in TRIP.iter().enumerate() {
+                ann_sets.push((tp, if ch_trip[i] { "1".to_owned() } else { "0".to_owned() }));
+            }
+            ann_sets.push(("ext_10mhz", if ext_active { "1".to_owned() } else { "0".to_owned() }));
+            ann_sets.push(("dem1_ch1_overload", "0".to_owned()));
+            ann_sets.push(("dem1_ch3_overload", "0".to_owned()));
+            ann_sets.push(("dem2_ch2_overload", "0".to_owned()));
+            ann_sets.push(("dem2_ch4_overload", "0".to_owned()));
+            ann_sets.push(("error", "0".to_owned()));
             let refs: Vec<(&str, &str)> = ann_sets.iter()
                 .map(|(n, v)| (*n, v.as_str())).collect();
             let _ = conn.set(&refs);
@@ -486,6 +534,9 @@ fn main() {
             return;
         }
 
+        #[cfg(target_os = "emscripten")]
+        unsafe { emscripten_sleep(33); }
+        #[cfg(not(target_os = "emscripten"))]
         std::thread::sleep(Duration::from_millis(33));
     }
 }

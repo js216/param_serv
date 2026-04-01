@@ -7,6 +7,7 @@ mergeInto(LibraryManager.library, {
     gui_sse_start: function(url_ptr) {
         var url = UTF8ToString(url_ptr);
         if (window._sse_source) window._sse_source.close();
+        if (window._demo_mode) return;
         window._sse_buffer = [];
         var es = new EventSource(url);
         es.onmessage = function(e) {
@@ -40,8 +41,16 @@ mergeInto(LibraryManager.library, {
         var method = UTF8ToString(method_ptr);
         var url = UTF8ToString(url_ptr);
         var body = body_len > 0 ? UTF8ArrayToString(HEAPU8, body_ptr, body_len) : null;
+        if (window._demo_mode && window._demo_request) {
+            var resp = window._demo_request(method, url, body || '');
+            stringToUTF8(resp, out_ptr, out_len);
+            return lengthBytesUTF8(resp);
+        }
+        // Rewrite URL base to current server (supports hot-switching)
+        var base = window._param_serv_url || 'http://127.0.0.1:7777';
+        var path = url.replace(/^https?:\/\/[^\/]+/, '');
         var xhr = new XMLHttpRequest();
-        xhr.open(method, url, false);
+        xhr.open(method, base + path, false);
         xhr.send(body);
         window._last_xhr = xhr;
         var resp = xhr.responseText || '';

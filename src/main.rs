@@ -150,6 +150,7 @@ fn handle(
     state: Arc<Mutex<State>>,
     notify: Arc<Condvar>,
 ) {
+    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
     let mut writer = stream.try_clone().expect("clone");
     let mut reader = BufReader::new(stream);
 
@@ -160,6 +161,7 @@ fn handle(
         };
 
         if req.method == "GET" && req.path == "/events" {
+            eprintln!("SSE client: {}", peer);
             serve_sse(&mut writer, &state, &notify);
             return;
         }
@@ -308,6 +310,8 @@ fn main() {
     eprintln!("param_serv listening on {}", TCP_ADDR);
 
     for stream in listener.incoming().flatten() {
+        let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+        eprintln!("client connected: {}", peer);
         let p = Arc::clone(&params);
         let s = Arc::clone(&state);
         let n = Arc::clone(&notify);

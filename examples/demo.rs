@@ -77,6 +77,7 @@ fn main() {
     let init: Vec<(&str, &str)> = vec![
         ("ref_source", "0"),
         ("ref_ext_src", "0"),
+        ("ref_input", "0"),
         ("ref_edge", "0"),
         ("ref_threshold", "0"),
         ("ref_frequency", "1000"),

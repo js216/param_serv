@@ -140,7 +140,7 @@ fn main() {
     // Per-channel signal config (settable via demo_ch*_* params from browser UI)
     let mut ch_x_ampl = [200.0f64, 150.0, 250.0, 180.0];
     let mut ch_y_ampl = [200.0f64, 150.0, 250.0, 180.0];
-    let mut ch_waveform = [0usize; 4]; // 0=sine, 1=noisy, 2=noise
+    let mut ch_waveform = [0usize; 4]; // 0=sine, 1=noisy, 2=noise, 3=dc
     let mut ch_frequency = [1.0f64, 1.3, 0.8, 0.6];
     let mut ch_trip = [false; 4];
     // Global instrument config
@@ -378,6 +378,10 @@ fn main() {
                 2 => ( // white noise
                     xa * pseudo_random(&mut rng_seed) * 2.0,
                     ya * pseudo_random(&mut rng_seed) * 2.0,
+                ),
+                3 => ( // DC
+                    xa,
+                    ya,
                 ),
                 _ => ( // clean sine (default)
                     (t * freq).sin() * xa,

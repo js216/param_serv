@@ -512,20 +512,15 @@ fn main() {
 
         // Annunciators: driven by channel/instrument config panels
         {
-            const TRIP: &[&str] = &[
-                "dem1_ch1_trip", "dem2_ch2_trip", "dem1_ch3_trip", "dem2_ch4_trip",
+            const TRIP_PARAMS: &[&str] = &[
+                "ch1_trip", "ch2_trip", "ch3_trip", "ch4_trip",
             ];
             let ext_active = ext_10mhz_ampl > 0.5;
             let mut ann_sets: Vec<(&str, String)> = Vec::new();
-            for (i, &tp) in TRIP.iter().enumerate() {
+            for (i, &tp) in TRIP_PARAMS.iter().enumerate() {
                 ann_sets.push((tp, if ch_trip[i] { "1".to_owned() } else { "0".to_owned() }));
             }
             ann_sets.push(("ext_10mhz", if ext_active { "1".to_owned() } else { "0".to_owned() }));
-            ann_sets.push(("dem1_ch1_overload", "0".to_owned()));
-            ann_sets.push(("dem1_ch3_overload", "0".to_owned()));
-            ann_sets.push(("dem2_ch2_overload", "0".to_owned()));
-            ann_sets.push(("dem2_ch4_overload", "0".to_owned()));
-            ann_sets.push(("error", "0".to_owned()));
             let refs: Vec<(&str, &str)> = ann_sets.iter()
                 .map(|(n, v)| (*n, v.as_str())).collect();
             let _ = conn.set(&refs);

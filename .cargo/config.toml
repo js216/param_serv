@@ -3,4 +3,4 @@ linker = "arm-linux-gnueabihf-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [alias]
-build-arm = "build --release --target armv7-unknown-linux-gnueabihf --bins --examples"
+arm = "build --release --target armv7-unknown-linux-gnueabihf --bins --examples"

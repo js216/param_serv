@@ -114,6 +114,7 @@ mod native {
 
     pub struct Connection {
         buffer: Arc<Mutex<Vec<(String, String)>>>,
+        has_data: Arc<std::sync::atomic::AtomicBool>,
         req_w: TcpStream,
         req_r: BufReader<TcpStream>,
     }
@@ -132,6 +133,8 @@ mod native {
 
             let buffer: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
             let buf_clone = Arc::clone(&buffer);
+            let has_data = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let has_data_clone = Arc::clone(&has_data);
 
             thread::spawn(move || {
                 let mut reader = BufReader::new(sse);
@@ -153,16 +156,22 @@ mod native {
                         let pairs = parse_sse_event(data);
                         if !pairs.is_empty() {
                             buf_clone.lock().unwrap().extend(pairs);
+                            has_data_clone.store(true, std::sync::atomic::Ordering::Release);
                         }
                     }
                 }
             });
 
-            Ok(Connection { buffer, req_w, req_r })
+            Ok(Connection { buffer, has_data, req_w, req_r })
         }
 
         /// Non-blocking: drain all buffered SSE changes since last call.
+        /// Uses an atomic flag to avoid the mutex lock when the buffer is empty.
         pub fn get(&mut self) -> io::Result<Vec<(String, String)>> {
+            if !self.has_data.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(Vec::new());
+            }
+            self.has_data.store(false, std::sync::atomic::Ordering::Relaxed);
             let mut buf = self.buffer.lock().unwrap();
             Ok(std::mem::take(&mut *buf))
         }

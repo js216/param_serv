@@ -144,7 +144,6 @@ fn main() {
     let mut ch_y_ampl = [200.0f64, 150.0, 250.0, 180.0];
     let mut ch_waveform = [0usize; 4]; // 0=sine, 1=noisy, 2=noise, 3=dc
     let mut ch_frequency = [1.0f64, 1.3, 0.8, 0.6];
-    let mut ch_trip = [false; 4];
     // Global instrument config
     let mut ext_10mhz_ampl: f64 = 0.0;
 
@@ -212,7 +211,7 @@ fn main() {
                             "y_ampl"    => { if let Ok(a) = v.parse::<f64>() { ch_y_ampl[idx] = a; } }
                             "waveform"  => { if let Ok(w) = v.parse::<usize>() { ch_waveform[idx] = w; } }
                             "frequency" => { if let Ok(f) = v.parse::<f64>() { ch_frequency[idx] = f; } }
-                            "trip"      => ch_trip[idx] = v != "0",
+                            "trip"      => { let _ = conn.set(&[(&format!("demo_ch{}_trip", idx + 1), v)]); }
                             _ => {}
                         }
                     }
@@ -510,19 +509,14 @@ fn main() {
             let _ = conn.set(&refs);
         }
 
-        // Annunciators: driven by channel/instrument config panels
+        // Annunciators: ext 10 MHz only; trips are owned by exec
         {
-            const TRIP_PARAMS: &[&str] = &[
-                "ch1_trip", "ch2_trip", "ch3_trip", "ch4_trip",
-            ];
             let ext_active = ext_10mhz_ampl > 0.5;
-            let mut ann_sets: Vec<(&str, String)> = Vec::new();
-            for (i, &tp) in TRIP_PARAMS.iter().enumerate() {
-                ann_sets.push((tp, if ch_trip[i] { "1".to_owned() } else { "0".to_owned() }));
-            }
-            ann_sets.push(("ext_10mhz", if ext_active { "1".to_owned() } else { "0".to_owned() }));
+            let ann_sets: Vec<(&str, &str)> = vec![
+                ("ext_10mhz", if ext_active { "1" } else { "0" }),
+            ];
             let refs: Vec<(&str, &str)> = ann_sets.iter()
-                .map(|(n, v)| (*n, v.as_str())).collect();
+                .map(|&(n, v)| (n, v)).collect();
             let _ = conn.set(&refs);
         }
 

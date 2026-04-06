@@ -65,6 +65,7 @@ pub fn parse_param_line(line: &str) -> Option<ParamInfo> {
 #[cfg(not(target_os = "emscripten"))]
 mod native {
     use super::*;
+    use std::collections::HashMap;
     use std::io::{self, BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
     use std::sync::{Arc, Mutex};
@@ -72,31 +73,26 @@ mod native {
 
     /// Parse SSE event data: `data: {"c":N,"p":{"name":"val",...}}\n\n`
     /// Extracts name/value pairs from the "p" object.
-    fn parse_sse_event(line: &str) -> Vec<(String, String)> {
-        let mut results = Vec::new();
-        // Find the "p":{...} section
+    /// Parse SSE event and push only changed key-value pairs into `out`.
+    fn parse_sse_dedup(line: &str, last: &mut HashMap<String, String>, out: &mut Vec<(String, String)>) {
         let p_start = match line.find("\"p\":{") {
             Some(i) => i + 4,
-            None => return results,
+            None => return,
         };
-        // Find matching closing brace
         let inner = &line[p_start + 1..];
         let p_end = match inner.rfind('}') {
             Some(i) => i,
-            None => return results,
+            None => return,
         };
         let pairs = &inner[..p_end];
-        // Parse "key":"value" pairs
         let mut rest = pairs;
         while let Some(kstart) = rest.find('"') {
             rest = &rest[kstart + 1..];
             let kend = match rest.find('"') { Some(i) => i, None => break };
             let key = &rest[..kend];
             rest = &rest[kend + 1..];
-            // Skip ":"
             let vstart = match rest.find('"') { Some(i) => i + 1, None => break };
             rest = &rest[vstart..];
-            // Find closing quote (handle escaped quotes)
             let mut vend = 0;
             let bytes = rest.as_bytes();
             while vend < bytes.len() {
@@ -105,11 +101,23 @@ mod native {
                 }
                 vend += 1;
             }
-            let val = rest[..vend].replace("\\\"", "\"").replace("\\\\", "\\");
-            results.push((key.to_owned(), val));
+            let raw_val = &rest[..vend];
+            // Check dedup before allocating
+            let changed = match last.get(key) {
+                Some(prev) => prev != raw_val,
+                None => true,
+            };
+            if changed {
+                let val = if raw_val.contains('\\') {
+                    raw_val.replace("\\\"", "\"").replace("\\\\", "\\")
+                } else {
+                    raw_val.to_owned()
+                };
+                last.insert(key.to_owned(), raw_val.to_owned());
+                out.push((key.to_owned(), val));
+            }
             rest = &rest[vend + 1..];
         }
-        results
     }
 
     pub struct Connection {
@@ -145,6 +153,9 @@ mod native {
                     if reader.read_line(&mut line).is_err() { return; }
                     if line.trim().is_empty() { break; }
                 }
+                // Dedup: skip values that haven't changed
+                let mut last: HashMap<String, String> = HashMap::new();
+                let mut changed: Vec<(String, String)> = Vec::new();
                 // Read SSE events
                 loop {
                     line.clear();
@@ -153,9 +164,10 @@ mod native {
                         _ => {}
                     }
                     if let Some(data) = line.trim().strip_prefix("data: ") {
-                        let pairs = parse_sse_event(data);
-                        if !pairs.is_empty() {
-                            buf_clone.lock().unwrap().extend(pairs);
+                        changed.clear();
+                        parse_sse_dedup(data, &mut last, &mut changed);
+                        if !changed.is_empty() {
+                            buf_clone.lock().unwrap().extend(changed.drain(..));
                             has_data_clone.store(true, std::sync::atomic::Ordering::Release);
                         }
                     }

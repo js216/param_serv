@@ -26,14 +26,12 @@ const SINC_BW3DB_FACTOR: f64 = 0.886;
 /// `skip`: 0=cycles, 1=enbw, 2=tint, 3=bw3db, -1=skip none (freq/harmonic change)
 fn push_filter_updates(
     updates: &mut Vec<(&'static str, String)>,
-    prefix_cycles: &'static str,
-    prefix_enbw: &'static str,
-    prefix_tint: &'static str,
-    prefix_bw3db: &'static str,
+    prefixes: [&'static str; 4],
     t_int: f64,
     f_det: f64,
     skip: i32,
 ) {
+    let [prefix_cycles, prefix_enbw, prefix_tint, prefix_bw3db] = prefixes;
     let n_cycles = t_int * f_det;
     let enbw = 1.0 / t_int;
     let bw3db = SINC_BW3DB_FACTOR / t_int;
@@ -332,15 +330,15 @@ fn main() {
                 if t_int <= 0.0 { continue; }
                 push_filter_updates(
                     &mut filter_sets,
-                    dm.cycles_key, dm.enbw_key, dm.tint_key, dm.bw3db_key,
+                    [dm.cycles_key, dm.enbw_key, dm.tint_key, dm.bw3db_key],
                     t_int, det_freq, skip,
                 );
                 // Record the user's raw value for the skipped param so echo
                 // detection won't keep re-triggering on subsequent ticks.
-                if skip >= 0 {
-                    if let Some(v) = latest {
-                        last_written.insert(active_key.to_string(), v);
-                    }
+                if skip >= 0
+                    && let Some(v) = latest
+                {
+                    last_written.insert(active_key.to_string(), v);
                 }
             }
             // Write back updated state

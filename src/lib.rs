@@ -43,10 +43,10 @@ pub fn parse_param_line(line: &str) -> Option<ParamInfo> {
             info.unit = Some(v.to_owned());
         } else if let Some(v) = field.strip_prefix("unit_conv:") {
             for pair in v.split(',') {
-                if let Some((name, exp)) = pair.split_once('=') {
-                    if let Ok(e) = exp.parse::<i32>() {
-                        info.unit_conv.push((name.to_owned(), e));
-                    }
+                if let Some((name, exp)) = pair.split_once('=')
+                    && let Ok(e) = exp.parse::<i32>()
+                {
+                    info.unit_conv.push((name.to_owned(), e));
                 }
             }
         } else if let Some(v) = field.strip_prefix("min:") {

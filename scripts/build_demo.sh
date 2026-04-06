@@ -1,4 +1,4 @@
 #!/bin/bash
-# Build demo.rs example
+# Build param_demo.rs example
 cd /home/jk/projects/SR835_firmware/param_serv
-cargo build --example demo 2>&1
+cargo build --example param_demo 2>&1
